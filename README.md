@@ -1,19 +1,12 @@
-# nf-__NAME__
+# nf-seqc
 
-<!-- TEMPLATE:START -->
-> **Template repo.** Create a new pipeline via GitHub's "Use this template", naming it `nf-<name>`. The `init-from-template` workflow auto-runs on the first push: it derives `<name>` from the repo name, replaces `__NAME__` / `__NAME_UPPER__` tokens, strips this block, and removes itself.
->
-> Manual fallback (e.g. running locally before pushing, or if the repo name doesn't start with `nf-`): `./scripts/init.sh <name>`.
->
-> Afterwards, edit the remaining `TODO`s in `main.nf`, `nextflow.config`, and `conf/test.config` for the pipeline's actual inputs, processes, and parameters.
-<!-- TEMPLATE:END -->
 
-Nextflow pipeline for __NAME__.
+Nextflow pipeline for seqc.
 
 ## Quickstart
 
 ```bash
-nextflow run eit-gbi/nf-__NAME__ -profile test,docker
+nextflow run eit-gbi/nf-seqc -profile test,docker
 ```
 
 ## Layout
