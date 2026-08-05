@@ -1,0 +1,83 @@
+name: Sync submodule pointers to modules.versions
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'modules.versions'
+
+jobs:
+  sync:
+    if: startsWith(github.event.head_commit.message, 'feat(deps)')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+          token: ${{ secrets.NF_ORG_PAT }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # Only MINOR nf-mod-* updates ever reach modules.versions: the shared
+      # Renovate preset disables PATCH propagation and routes MAJOR updates to
+      # the Dependency Dashboard, so this workflow only ever syncs minor bumps.
+      - name: Sync each submodule to its declared version
+        id: sync
+        run: |
+          set -euo pipefail
+          CHANGED=0
+
+          while IFS='=' read -r module version; do
+            module=$(echo "$module" | xargs)
+            version=$(echo "$version" | xargs)
+            [ -z "$module" ] && continue
+            [[ "$module" == \#* ]] && continue
+
+            submodule_path=$(git config -f .gitmodules --get-regexp '^submodule\..*\.url$' \
+              | awk -v m="$module" '$2 ~ ("/"m"(\\.git)?$") { sub(/\.url$/, ".path", $1); print $1 }' \
+              | head -n1)
+
+            if [ -z "$submodule_path" ]; then
+              echo "WARN no submodule found for ${module}, skipping"
+              continue
+            fi
+
+            actual_path=$(git config -f .gitmodules --get "$submodule_path")
+
+            version_clean="${version#v}"
+            target_tag="v${version_clean}"
+            echo "Module ${module} -> ${actual_path}, target tag ${target_tag}"
+
+            pushd "$actual_path" > /dev/null
+            git fetch --tags --quiet origin
+            current_sha=$(git rev-parse HEAD)
+            target_sha=$(git rev-parse "refs/tags/${target_tag}^{commit}")
+
+            if [ "$current_sha" = "$target_sha" ]; then
+              echo "  Already at ${target_tag} (${target_sha:0:8}), nothing to do."
+              popd > /dev/null
+              continue
+            fi
+
+            git checkout --quiet "refs/tags/${target_tag}"
+            popd > /dev/null
+
+            git add "$actual_path"
+            CHANGED=1
+            echo "  Updated ${actual_path} to ${target_tag}"
+          done < modules.versions
+
+          echo "changed=${CHANGED}" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push if anything changed
+        if: steps.sync.outputs.changed == '1'
+        run: |
+          git commit -m "chore(submodules) sync pointers to modules.versions"
+          git push origin main

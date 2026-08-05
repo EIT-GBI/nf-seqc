@@ -1,0 +1,53 @@
+name: init-from-template
+
+# Runs once on a repo created from this template:
+# derives the pipeline name from the repo name (nf-<name>),
+# runs the init script, and commits the result back.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  init:
+    # Don't run on the template repo itself.
+    if: github.event.repository.name != 'nf-template'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scaffold and commit
+        run: |
+          REPO_NAME='${{ github.event.repository.name }}'
+
+          # Require the nf-<name> naming convention.
+          if [ "${REPO_NAME#nf-}" = "$REPO_NAME" ]; then
+            echo "Repo name '$REPO_NAME' lacks the 'nf-' prefix — skipping."
+            exit 0
+          fi
+
+          # Don't scaffold modules (nf-mod-*) as pipelines.
+          if [ "${REPO_NAME#nf-mod-}" != "$REPO_NAME" ]; then
+            echo "Repo name '$REPO_NAME' is a module (nf-mod-*) — skipping pipeline init."
+            exit 0
+          fi
+
+          # Skip if already scaffolded (tokens no longer present).
+          if ! grep -q '__NAME__' README.md; then
+            echo "Already scaffolded — skipping."
+            exit 0
+          fi
+
+          PIPELINE_NAME="${REPO_NAME#nf-}"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          bash scripts/init.sh "$PIPELINE_NAME"
+
+          git add -A
+          git commit -m "Initialize nf-$PIPELINE_NAME from template"
+          git push origin HEAD:${{ github.ref_name }}

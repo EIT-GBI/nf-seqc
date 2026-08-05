@@ -1,0 +1,53 @@
+name: Auto-release on submodule MINOR bump
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    if: startsWith(github.event.head_commit.message, 'chore(submodules)')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.NF_ORG_PAT }}
+
+      - name: Compute next MINOR version
+        id: next
+        run: |
+          set -euo pipefail
+          CURRENT=$(grep -oP "version\s*=\s*['\"]\K[^'\"]+" nextflow.config | head -n1)
+          if [ -z "$CURRENT" ]; then
+            echo "ERROR could not find version in nextflow.config"
+            exit 1
+          fi
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          NEXT_MINOR=$((MINOR + 1))
+          NEXT="${MAJOR}.${NEXT_MINOR}.0"
+          echo "current=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "next=${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "next_tag=v${NEXT}" >> "$GITHUB_OUTPUT"
+
+      - name: Update nextflow.config and commit
+        env:
+          NEXT: ${{ steps.next.outputs.next }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          sed -i "s/version\s*=\s*['\"][^'\"]*['\"]/version = '${NEXT}'/" nextflow.config
+          git add nextflow.config
+          git commit -m "chore bump version to ${NEXT} [skip ci]"
+          git push origin main
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.NF_ORG_PAT }}
+          NEXT_TAG: ${{ steps.next.outputs.next_tag }}
+          CURRENT: ${{ steps.next.outputs.current }}
+        run: |
+          NOTES="Automated MINOR release propagating an upstream nf-mod submodule MINOR update. Previous version v${CURRENT}"
+          gh release create "$NEXT_TAG" --target main --title "$NEXT_TAG" --generate-notes --notes "$NOTES"

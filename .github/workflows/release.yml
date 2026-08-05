@@ -1,0 +1,75 @@
+# .github/workflows/release.yml
+name: Release on Merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+jobs:
+  release:
+    # Only run if PR was merged (not just closed) and has a bump label.
+    # Skip on the template repo itself — only scaffolded copies release.
+    if: github.event.pull_request.merged == true && github.event.repository.name != 'nf-template'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Elevated token (PAT or GitHub App) whose owner/app is on the
+          # main ruleset's bypass list. The default GITHUB_TOKEN cannot
+          # bypass rulesets, so pushing the bump commit to main needs this.
+          token: ${{ secrets.NF_ORG_PAT }}
+
+      - name: Determine bump type from labels
+        id: bump
+        run: |
+          LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
+          if echo "$LABELS" | grep -q "bump:major"; then
+            echo "type=major" >> $GITHUB_OUTPUT
+          elif echo "$LABELS" | grep -q "bump:minor"; then
+            echo "type=minor" >> $GITHUB_OUTPUT
+          elif echo "$LABELS" | grep -q "bump:patch"; then
+            echo "type=patch" >> $GITHUB_OUTPUT
+          else
+            echo "No bump label found, skipping release"
+            exit 0
+          fi
+
+      - name: Get current version
+        id: current
+        run: |
+          VERSION=$(grep -oP "version\s*=\s*['\"]\K[^'\"]+" nextflow.config)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Compute next version
+        id: next
+        run: |
+          IFS='.' read -r MAJOR MINOR PATCH <<< "${{ steps.current.outputs.version }}"
+          case "${{ steps.bump.outputs.type }}" in
+            major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR+1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH+1)) ;;
+          esac
+          echo "version=$MAJOR.$MINOR.$PATCH" >> $GITHUB_OUTPUT
+
+      - name: Update nextflow.config
+        run: |
+          sed -i "s/version\s*=\s*['\"][^'\"]*['\"]/version = '${{ steps.next.outputs.version }}'/" nextflow.config
+
+      - name: Commit, tag, push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add nextflow.config
+          git commit -m "chore: bump version to ${{ steps.next.outputs.version }} [skip ci]"
+          git tag "v${{ steps.next.outputs.version }}"
+          git push && git push --tags
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ steps.next.outputs.version }}"
+          generate_release_notes: true

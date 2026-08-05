@@ -1,0 +1,70 @@
+name: Flag major nf-mod updates
+
+# Renovate deliberately ignores MAJOR nf-mod-* bumps (breaking changes need
+# manual pipeline work). This workflow checks each module's latest release
+# directly and opens a dedicated tracking issue when a new major exists, so the
+# signal is a real issue rather than a line in the Dependency Dashboard.
+
+on:
+  schedule:
+    - cron: '0 7 * * 1-5'   # weekdays 07:00 UTC
+  workflow_dispatch:
+
+jobs:
+  check:
+    # Skip on the template repo itself — only scaffolded pipelines track modules.
+    if: github.repository != 'EIT-GBI/nf-template'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check each nf-mod-* for a major update
+        env:
+          GH_TOKEN: ${{ secrets.NF_ORG_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          while IFS='=' read -r module version; do
+            module=$(echo "$module" | xargs)
+            version=$(echo "$version" | xargs)
+            [ -z "$module" ] && continue
+            [[ "$module" == \#* ]] && continue
+
+            current_clean="${version#v}"
+            cur_major="${current_clean%%.*}"
+
+            # Latest published release of the module repo (no tag = latest)
+            latest_tag=$(gh release view --repo "EIT-GBI/${module}" --json tagName --jq '.tagName' 2>/dev/null || echo "")
+            if [ -z "$latest_tag" ]; then
+              echo "WARN could not read latest release for ${module}, skipping"
+              continue
+            fi
+            latest_clean="${latest_tag#v}"
+            latest_major="${latest_clean%%.*}"
+
+            if [ "$latest_major" -le "$cur_major" ]; then
+              echo "${module}: no major update (pinned ${current_clean}, latest ${latest_clean})."
+              continue
+            fi
+
+            title="Major update available: ${module} v${cur_major}.x -> v${latest_major}.x (manual update needed)"
+
+            # Dedup: skip if an open issue with this exact title already exists
+            existing=$(gh issue list --repo "$REPO" --state open --limit 200 \
+              --json title --jq "[.[] | select(.title == \"${title}\")] | length")
+            if [ "$existing" -gt 0 ]; then
+              echo "${module}: tracking issue already open, skipping."
+              continue
+            fi
+
+            body=$(printf 'A **major** release of `%s` is available.\n\n- Pinned in `modules.versions`: `%s`\n- Latest release: `%s`\n\nMajor bumps may contain breaking changes, so the pipeline is **not** updated automatically.\n\n**To do:**\n- Review the upstream release notes for breaking changes.\n- Update the pipeline code as needed.\n- Bump `%s` in `modules.versions` to the new major and let the sync/release workflows run.' \
+              "$module" "$current_clean" "$latest_clean" "$module")
+
+            gh issue create --repo "$REPO" --title "$title" --body "$body" --label "bump:major" \
+              || gh issue create --repo "$REPO" --title "$title" --body "$body"
+            echo "${module}: opened tracking issue."
+          done < modules.versions

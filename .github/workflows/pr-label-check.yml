@@ -1,0 +1,38 @@
+# .github/workflows/pr-label-check.yml
+name: PR Label Check
+
+on:
+  pull_request:
+    types: [opened, edited, labeled, unlabeled, synchronize, reopened]
+    branches: [main]
+
+jobs:
+  check-bump-label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify exactly one bump label
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          # Count how many bump:* labels are present
+          COUNT=$(echo "$LABELS" | grep -oE 'bump:(patch|minor|major)' | wc -l)
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::This PR is missing a bump label."
+            echo "Add exactly one of: bump:patch, bump:minor, bump:major"
+            echo ""
+            echo "Guidance:"
+            echo "  bump:patch  - when you make backward-compatible bug fixes"
+            echo "  bump:minor  - when you add functionality in a backward-compatible manner"
+            echo "  bump:major  - when you make incompatible API changes"
+            exit 1
+          fi
+
+          if [ "$COUNT" -gt 1 ]; then
+            echo "::error::This PR has multiple bump labels. Use exactly one."
+            echo "Found: $(echo "$LABELS" | grep -oE 'bump:(patch|minor|major)' | tr '\n' ' ')"
+            exit 1
+          fi
+
+          MATCHED=$(echo "$LABELS" | grep -oE 'bump:(patch|minor|major)')
+          echo "✅ Found bump label: $MATCHED"
