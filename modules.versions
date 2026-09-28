@@ -8,14 +8,14 @@
 # The module-repo-name must match the GitHub repo name exactly (e.g. nf-mod-fastqc).
 # The version-tag must match a published release tag in that repo (e.g. v1.2.3).
 
-nf-mod-fastqc=2.0.2
+nf-mod-fastqc=3.0.0
+nf-mod-samtools=1.0.0
 
-# BLOCKED: nf-mod-dorado and nf-mod-samtools have no git tags and no published
-# release, so there is nothing for the sync workflow to check out. Their
-# submodules currently track the default branch, which means this pipeline is
-# not reproducible on those two tools. Cut a release in each repo, then add:
+# BLOCKED: nf-mod-dorado has no git tag or published release, so there is
+# nothing for the sync workflow to check out. Its submodule tracks the default
+# branch, so the pipeline is not reproducible on dorado. Cut a release, then add:
 #   nf-mod-dorado=<version>
-#   nf-mod-samtools=<version>
 #
-# Also pending: interop, bases2fastq, nanoplot and multiqc live in
-# modules/local/ because no nf-mod-* repo exists for them yet.
+# Also pending: interop, bases2fastq and multiqc live in modules/local/ because
+# no nf-mod-* repo exists for them yet. nanoplot is local until nf-mod-nanoplot
+# accepts unaligned input and has a release.

@@ -65,7 +65,7 @@ Deliberate divergences, all documented in the script's module docstring:
 - **Missing optional inputs degrade to `n/a`** rather than raising. Every metric is individually wrapped in `_safe()`, because patterned-flowcell-only fields (`percent_occupied`) are absent on other flowcells and one missing field should not cost the whole row.
 - **Two upstream bugs are fixed here** — if they are fixed upstream, drop the notes: `_parse_flowcell` used `> 100`, labelling a 100-cycle P2 cartridge "P2 50" and contradicting its own docstring; and the sample-sheet path was split on `os.sep`, which leaves a Windows path from `RunParameters.xml` entirely unsplit when running on Linux.
 
-**Composition via git submodules.** Per-tool processes live in their own `EIT-GBI/nf-mod-*` repos under `modules/<tool>/`, one subdirectory per subcommand (`modules/fastqc/fastqc/main.nf` → `FASTQC_FASTQC`, `modules/dorado/basecaller/main.nf` → `DORADO_BASECALLER`). Always check whether an `nf-mod-*` repo already exists in the org before writing a process. `modules/local/` holds only the four tools that have no repo yet — `interop`, `bases2fastq`, `nanoplot`, `multiqc` — and each is marked for promotion.
+**Composition via git submodules.** Per-tool processes live in their own `EIT-GBI/nf-mod-*` repos under `modules/<tool>/`, one subdirectory per subcommand (`modules/fastqc/fastqc/main.nf` → `FASTQC_FASTQC`, `modules/dorado/basecaller/main.nf` → `DORADO_BASECALLER`). Always check whether an `nf-mod-*` repo already exists in the org before writing a process. `modules/local/` holds tools not yet usable from a repo — `interop`, `bases2fastq`, `multiqc` (no repo) and `nanoplot` (`nf-mod-nanoplot` exists but only takes aligned BAM and has no release) — and each is marked for promotion. Whether a tool gets its own repo is decided case by case: anything reusable by another pipeline does.
 
 **`modules.versions` is the source of truth for module versions, not the submodule pointers.** The flow is:
 
@@ -76,9 +76,9 @@ Deliberate divergences, all documented in the script's module docstring:
 
 Never hand-edit a submodule pointer to change a version — edit `modules.versions` and let the sync workflow move it, or the two drift.
 
-**Containers are pinned by the pipeline, not the module.** The `nf-mod-*` processes carry no `container` directive, so `conf/containers.config` assigns images by process name. Each module repo's `build.yml` publishes `ghcr.io/eit-gbi/nf-mod-<tool>` tagged `latest` and `sha-<short>`.
+**Containers come from the module's own config once it is released.** The `nf-mod-*` processes carry no `container` directive. Released repos ship `conf/module.config` assigning `ghcr.io/eit-gbi/nf-mod-<tool>:v<version>`, kept in step with the release by that repo's `release.yml`; `nextflow.config` includes those (currently fastqc, samtools), so moving the submodule moves the image. `conf/containers.config` covers everything else by process name — unreleased nf-mod repos on `latest`, and third-party images.
 
-**Config layering.** `nextflow.config` (manifest, params) → `conf/base.config` (resources) → `conf/containers.config` (images) → profiles (`docker`/`singularity` add GPU container options, `cluster` sets SLURM queues, `test*` set fixtures) → `outputDir` last.
+**Config layering.** `nextflow.config` (manifest, params) → `conf/base.config` (resources) → `modules/*/conf/module.config` (released module images) → `conf/containers.config` (remaining images) → profiles (`docker`/`singularity` add GPU container options, `cluster` sets SLURM queues, `test*` set fixtures) → `outputDir` last.
 
 ## Gotchas that cost time
 
@@ -89,17 +89,15 @@ These were all found empirically and all fail **silently**:
 - **`outputDir = params.outdir` must come after the `profiles` block.** Profiles are merged as the config is parsed, so assigning it earlier captures the default and silently ignores any profile that overrides `params.outdir`. The template shipped it in the wrong place.
 - **Process output globs keep their relative subpaths when published.** A tool that writes nested output (bases2fastq → `Samples/<project>/<sample>/`) will leak that structure into the results tree, so flatten inside the process before emitting.
 - **`**/` requires at least one directory level**, so root-level files need their own glob pattern alongside it.
-- **The modules hardcode `publishDir`** (`nf-mod-fastqc`, `nf-mod-dorado/basecaller`, most of `nf-mod-samtools`) even though this pipeline publishes via `output {}`. Result: those files land twice, once in `qc/fastqc/` from the module and once in the `output {}` tree. Dropping `publishDir` from the module repos is the fix; until then expect duplicates.
+- **A module that hardcodes `publishDir` publishes twice** — once from the module, once from the `output {}` tree. `nf-mod-fastqc` v3 and `nf-mod-samtools` v1 removed it; `nf-mod-dorado/basecaller` and `nf-mod-nanoplot` still have it. Check for it before adopting any module.
 - **`eval()` version commands run even under `-stub`, and a non-zero exit fails the whole task.** The existing modules get away with `tool --version | sed ...` because the pipeline's exit status is `sed`'s. Anything that can exit non-zero (e.g. `python3 -c "import x"`) needs `2>/dev/null || echo unknown`.
 - **`error()` inside a channel operator prints your message and then a spurious `Cannot access first() element from an empty List`.** Raise from the workflow body where the value is plain, not from inside a `map`/`flatMap` — see `requireRunComplete()` in `main.nf`.
 - **`withLabel` beats a bare `cpus =`.** `conf/test.config` therefore uses `resourceLimits` to cap resources, because setting `process.cpus = 1` would not override `withLabel: process_high`.
 
 ## Known gaps
 
-- `nf-mod-dorado` and `nf-mod-samtools` have **no git tags and no release**, so their submodules track the default branch and cannot be pinned in `modules.versions`. The pipeline is not reproducible on those two tools until releases are cut.
-- `nf-mod-dorado` has a Dockerfile but **no `build.yml`**, so `ghcr.io/eit-gbi/nf-mod-dorado` is not published — the nanopore branch cannot run until that workflow is added (copy it from `nf-mod-samtools`).
+- `nf-mod-dorado` has **no git tag or release**, so its submodule tracks the default branch and cannot be pinned in `modules.versions`; its image exists only as `latest` (dorado 0.8.3). It also still hardcodes `publishDir` in `basecaller/main.nf`.
 - `modules/dorado/main.nf` (the submodule's *root* file) fails to parse: `Invalid process definition -- check for missing or out-of-order section labels`. It is an unused `nf-mod-template` leftover with empty `input:`/`output:` sections; the real process is in `basecaller/main.nf`. Nothing in this pipeline includes it, but it shows as an error in the IDE. Fix is upstream — delete that file in the `nf-mod-dorado` repo.
-- Third-party image tags in `conf/containers.config` (bases2fastq, nanoplot, multiqc) were written from convention and **not verified against the registries**.
 - `modules/local/interop/Dockerfile` (InterOp Python bindings + numpy/matplotlib — no public image bundles these) is **not built or published**, so `INTEROP_RUN_METRICS` cannot run for real yet. Either add an image-build workflow to this repo or move the module to `nf-mod-interop`, which inherits `build.yml` from `nf-mod-template`.
 - `collect_illumina_metrics.py`'s parsers and output writers are unit-verified, but the **InterOp reads themselves have never been exercised** — that needs a real run folder and the built image.
 - MultiQC parses FastQC, InterOp, bases2fastq, NanoStat and samtools output, but has **no module for PacBio CCS reports** — those are collected but will not appear as report sections until converted to custom content.
