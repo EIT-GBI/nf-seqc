@@ -1,0 +1,9 @@
+[submodule "modules/fastqc"]
+	path = modules/fastqc
+	url = https://github.com/EIT-GBI/nf-mod-fastqc.git
+[submodule "modules/dorado"]
+	path = modules/dorado
+	url = https://github.com/EIT-GBI/nf-mod-dorado.git
+[submodule "modules/samtools"]
+	path = modules/samtools
+	url = https://github.com/EIT-GBI/nf-mod-samtools.git

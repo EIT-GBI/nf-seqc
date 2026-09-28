@@ -1,0 +1,14 @@
+{
+  "_comment": "Marker file only: enough for platform detection in a `-stub` smoke run. Not a valid AVITI run — BASES2FASTQ will only work stubbed.",
+  "RunName": "20240101_AV000001_TESTRUN",
+  "RunType": "Sequencing",
+  "InstrumentName": "AV000001",
+  "Date": "2024-01-01T00:00:00Z",
+  "Chemistry": "Cloudbreak",
+  "Cycles": {
+    "R1": 151,
+    "R2": 151,
+    "I1": 10,
+    "I2": 10
+  }
+}

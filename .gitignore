@@ -2,3 +2,6 @@
 .nextflow*
 work/
 results/
+results-test/
+out_test*/
+__pycache__/

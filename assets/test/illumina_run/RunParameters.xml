@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Marker/parse fixture only: exercises the RunParameters.xml fields read by
+     modules/local/interop/collect_illumina_metrics.py. Not a full NextSeq file. -->
+<RunParameters>
+  <SampleSheetFilePath>C:\Illumina\SampleSheets\TESTPROJECT\SampleSheet_240101.csv</SampleSheetFilePath>
+  <FlowCellSerialNumber>ABCDEFGHI</FlowCellSerialNumber>
+  <CartridgeMode>NextSeq 2000 P2 Reagents (200 Cycles)</CartridgeMode>
+  <RunStartTime>2024-01-01T09:15:00.1234567Z</RunStartTime>
+  <RunElapsedTime>01:14:32:07:9876543</RunElapsedTime>
+  <OutputFolder>D:\Runs\240101_VH00001_0042_ABCDEFGHI</OutputFolder>
+  <CompletedCycles>
+    <Read1>151</Read1>
+    <Index1>10</Index1>
+    <Index2>10</Index2>
+    <Read2>151</Read2>
+  </CompletedCycles>
+</RunParameters>

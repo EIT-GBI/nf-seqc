@@ -1,0 +1,116 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this pipeline is for
+
+nf-seQC takes the **complete output directory of one sequencing run** and reports QC for the **batch/run**, across four instruments. One pipeline run = one sequencing run.
+
+| Platform | Native run output | Reads | QC source |
+| --- | --- | --- | --- |
+| Illumina NextSeq | `RunInfo.xml`, `RunParameters.xml`, `InterOp/`, `PrimaryAnalysisMetrics/` | demultiplexed on-instrument, left in place | FastQC + InterOp (%PF, %occupied, Q30, phasing, PhiX error — none of which reach the FASTQ) |
+| Element AVITI | `RunParameters.json` | none in the run folder — `bases2fastq` is part of this pipeline's job | FastQC + `RunStats.json`/`Metrics.csv` |
+| ONT PromethION P24 | POD5, `final_summary_*.txt` | `dorado basecaller` (GPU) → uBAM → `samtools fastq` | NanoPlot |
+| PacBio Revio | HiFi reads as unaligned BAM, `*.consensusreadset.xml`, CCS reports | already final, delivered as uBAM | NanoPlot + `samtools flagstat` |
+
+Only two of the four platforms hand you FASTQ, so read normalisation is per-platform and happens *inside* the pipeline. **POD5 arrive already split per barcode** — each directory containing `*.pod5` is one sample, named after that directory. There is deliberately no `dorado demux` step.
+
+**Dorado is the only genuinely GPU-accelerated tool here.** bases2fastq, FastQC, NanoPlot, samtools and MultiQC are all CPU-only; putting them in CUDA images would cost image size for nothing. GPU resources are set by name in `conf/base.config` (`accelerator = 1`) and `containerOptions` per profile in `nextflow.config` (`--gpus all` for Docker, `--nv` for Singularity). If reference-based QC is ever added, `nf-mod-parabricks` is the GPU path.
+
+## Commands
+
+```bash
+# Smoke-test the wiring on the bundled marker-file fixtures (see conf/test.config)
+nextflow run . -profile test -stub            # illumina
+nextflow run . -profile test_aviti -stub
+nextflow run . -profile test_nanopore -stub
+nextflow run . -profile test_pacbio -stub
+
+# Real run
+nextflow run . -profile cluster,singularity --input <run_dir> --outdir <dir>
+
+# Config / syntax checks — no linter or test framework is configured
+nextflow config . -profile test
+nextflow run . -resume
+
+# Lint. Reports ERRORS ONLY — the deprecation/style warnings come from the
+# language server (IDE), so a clean `nextflow lint` does not mean warning-free.
+nextflow lint main.nf subworkflows/local/ modules/local/ nextflow.config conf/
+```
+
+Requires Nextflow `>=25.04.0` (manifest-enforced); developed against 25.10.2.
+
+Style rules the language server enforces, all of which this repo already follows — keep new code consistent:
+
+- **`channel.*`, not `Channel.*`** — the capitalised factory namespace is deprecated.
+- **Declare explicit closure parameters**; implicit `it` is deprecated. Prefix deliberately unused ones with `_` (`.map { _meta, zip -> zip }`).
+- **Don't assign closures to local variables inside a function** — the language server does not resolve them and reports `X is not defined` as a hard error. Use a named top-level function instead (see `matchingFiles` in `main.nf`).
+
+There are no real test fixtures. `assets/test/` holds marker files and zero-byte reads: enough to exercise platform detection, sample discovery, channel wiring and publishing under `-stub`, but the tools themselves are never run. Verifying anything about tool behaviour needs real miniaturised runs.
+
+## Architecture
+
+`main.nf` detects the platform from marker files, dispatches to one of four subworkflows in `subworkflows/local/`, and declares the publish targets. Each platform subworkflow emits the same three channels — `reads`, `qc` (flat files MultiQC can read), `versions` — which is what makes `BATCH_REPORT` uniform. `meta` carries `[id, run, platform]`, where `id` is the sample (barcode, SMRT Cell, or Illumina/AVITI sample name) and `run` is constant for the whole pipeline run.
+
+Platform detection order matters: AVITI is checked before Illumina because both write a file called `RunParameters`, differing only in extension.
+
+### Illumina run metrics mirror an existing internal tool
+
+`modules/local/interop/` is a deliberate port of [EIT-GBI/Automate-Seq-Run-Metrics-Collection](https://github.com/EIT-GBI/Automate-Seq-Run-Metrics-Collection) (a cron-based collector for NextSeq 2000). **Keep `LOG_COLUMNS` in `collect_illumina_metrics.py` in sync with that repo's `utils.py`** — the whole point is that rows from either tool concatenate into one log. The metric set, column names and %Occupied vs %PF plot are intentionally identical; the Python lives beside the module (same pattern as `nf-mod-utils/samplesheet`).
+
+Deliberate divergences, all documented in the script's module docstring:
+
+- **One-row CSV per run, not an append to a central log.** One pipeline run is one sequencing run; appending to a shared file from a task would race and break `-resume`.
+- **Nothing in the run directory is written.** The upstream `monitoring_complete.txt` marker exists to stop cron reprocessing; `-resume` covers that here.
+- **Missing optional inputs degrade to `n/a`** rather than raising. Every metric is individually wrapped in `_safe()`, because patterned-flowcell-only fields (`percent_occupied`) are absent on other flowcells and one missing field should not cost the whole row.
+- **Two upstream bugs are fixed here** — if they are fixed upstream, drop the notes: `_parse_flowcell` used `> 100`, labelling a 100-cycle P2 cartridge "P2 50" and contradicting its own docstring; and the sample-sheet path was split on `os.sep`, which leaves a Windows path from `RunParameters.xml` entirely unsplit when running on Linux.
+
+**Composition via git submodules.** Per-tool processes live in their own `EIT-GBI/nf-mod-*` repos under `modules/<tool>/`, one subdirectory per subcommand (`modules/fastqc/fastqc/main.nf` → `FASTQC_FASTQC`, `modules/dorado/basecaller/main.nf` → `DORADO_BASECALLER`). Always check whether an `nf-mod-*` repo already exists in the org before writing a process. `modules/local/` holds only the four tools that have no repo yet — `interop`, `bases2fastq`, `nanoplot`, `multiqc` — and each is marked for promotion.
+
+**`modules.versions` is the source of truth for module versions, not the submodule pointers.** The flow is:
+
+1. Renovate (config inherited from `EIT-GBI/nf-renovate-config`) opens a PR editing a `nf-mod-<tool>=<version>` line. The shared preset suppresses PATCH propagation and routes MAJOR bumps to the dashboard, so only MINOR bumps land automatically.
+2. `sync-submodules.yml` fires on push to `main` touching `modules.versions` **only when the head commit message starts with `feat(deps)`**. It maps repo name → submodule path via `.gitmodules`, checks out tag `v<version>`, and commits `chore(submodules) sync pointers to modules.versions`.
+3. `auto-release.yml` fires on that `chore(submodules)` commit and cuts a MINOR release.
+4. `flag-major-updates.yml` runs weekday mornings and opens a deduplicated tracking issue per available major.
+
+Never hand-edit a submodule pointer to change a version — edit `modules.versions` and let the sync workflow move it, or the two drift.
+
+**Containers are pinned by the pipeline, not the module.** The `nf-mod-*` processes carry no `container` directive, so `conf/containers.config` assigns images by process name. Each module repo's `build.yml` publishes `ghcr.io/eit-gbi/nf-mod-<tool>` tagged `latest` and `sha-<short>`.
+
+**Config layering.** `nextflow.config` (manifest, params) → `conf/base.config` (resources) → `conf/containers.config` (images) → profiles (`docker`/`singularity` add GPU container options, `cluster` sets SLURM queues, `test*` set fixtures) → `outputDir` last.
+
+## Gotchas that cost time
+
+These were all found empirically and all fail **silently**:
+
+- **Publishing only works for task outputs.** Files that came from the input run directory cannot be published by the `output {}` block. That is why Illumina FASTQ, Revio HiFi BAM and the PacBio CCS reports never appear under `--outdir` — they are instrument-produced and stay in the run folder. Adding a publish target for them does nothing rather than erroring.
+- **Never `flatMap` a channel before publishing it.** A `flatMap`-derived channel loses the task provenance the output block needs and publishes nothing at all. `map` and raw tuple channels are fine.
+- **`outputDir = params.outdir` must come after the `profiles` block.** Profiles are merged as the config is parsed, so assigning it earlier captures the default and silently ignores any profile that overrides `params.outdir`. The template shipped it in the wrong place.
+- **Process output globs keep their relative subpaths when published.** A tool that writes nested output (bases2fastq → `Samples/<project>/<sample>/`) will leak that structure into the results tree, so flatten inside the process before emitting.
+- **`**/` requires at least one directory level**, so root-level files need their own glob pattern alongside it.
+- **The modules hardcode `publishDir`** (`nf-mod-fastqc`, `nf-mod-dorado/basecaller`, most of `nf-mod-samtools`) even though this pipeline publishes via `output {}`. Result: those files land twice, once in `qc/fastqc/` from the module and once in the `output {}` tree. Dropping `publishDir` from the module repos is the fix; until then expect duplicates.
+- **`eval()` version commands run even under `-stub`, and a non-zero exit fails the whole task.** The existing modules get away with `tool --version | sed ...` because the pipeline's exit status is `sed`'s. Anything that can exit non-zero (e.g. `python3 -c "import x"`) needs `2>/dev/null || echo unknown`.
+- **`error()` inside a channel operator prints your message and then a spurious `Cannot access first() element from an empty List`.** Raise from the workflow body where the value is plain, not from inside a `map`/`flatMap` — see `requireRunComplete()` in `main.nf`.
+- **`withLabel` beats a bare `cpus =`.** `conf/test.config` therefore uses `resourceLimits` to cap resources, because setting `process.cpus = 1` would not override `withLabel: process_high`.
+
+## Known gaps
+
+- `nf-mod-dorado` and `nf-mod-samtools` have **no git tags and no release**, so their submodules track the default branch and cannot be pinned in `modules.versions`. The pipeline is not reproducible on those two tools until releases are cut.
+- `nf-mod-dorado` has a Dockerfile but **no `build.yml`**, so `ghcr.io/eit-gbi/nf-mod-dorado` is not published — the nanopore branch cannot run until that workflow is added (copy it from `nf-mod-samtools`).
+- `modules/dorado/main.nf` (the submodule's *root* file) fails to parse: `Invalid process definition -- check for missing or out-of-order section labels`. It is an unused `nf-mod-template` leftover with empty `input:`/`output:` sections; the real process is in `basecaller/main.nf`. Nothing in this pipeline includes it, but it shows as an error in the IDE. Fix is upstream — delete that file in the `nf-mod-dorado` repo.
+- Third-party image tags in `conf/containers.config` (bases2fastq, nanoplot, multiqc) were written from convention and **not verified against the registries**.
+- `modules/local/interop/Dockerfile` (InterOp Python bindings + numpy/matplotlib — no public image bundles these) is **not built or published**, so `INTEROP_RUN_METRICS` cannot run for real yet. Either add an image-build workflow to this repo or move the module to `nf-mod-interop`, which inherits `build.yml` from `nf-mod-template`.
+- `collect_illumina_metrics.py`'s parsers and output writers are unit-verified, but the **InterOp reads themselves have never been exercised** — that needs a real run folder and the built image.
+- MultiQC parses FastQC, InterOp, bases2fastq, NanoStat and samtools output, but has **no module for PacBio CCS reports** — those are collected but will not appear as report sections until converted to custom content.
+- The `cluster` profile's executor, queue names and `--gres` string are placeholders pending confirmation with the cluster admins.
+
+## Release conventions
+
+`manifest.version` in `nextflow.config` is bumped by CI, never by hand.
+
+- Every PR to `main` must carry **exactly one** of `bump:patch`, `bump:minor`, `bump:major`; `pr-label-check.yml` fails it otherwise.
+- On merge, `release.yml` bumps the version, commits `chore: bump version to X.Y.Z [skip ci]`, tags, and releases.
+- Commit prefixes `feat(deps)` and `chore(submodules)` are load-bearing for the automation above — preserve them when squashing or rewriting.
+
+`nf-illumina-qc` in the org was an earlier testing pipeline and may be deleted; nf-seQC supersedes it.
