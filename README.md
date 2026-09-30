@@ -85,7 +85,10 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 - `subworkflows/local/` — one subworkflow per platform, plus `batch_report.nf`
 - `modules/<tool>/` — git submodules from `nf-mod-*` repos
 - `modules/local/` — tools with no `nf-mod-*` repo yet (interop, bases2fastq, nanoplot, multiqc)
-- `conf/` — `base.config` (resources), `containers.config` (images), `test.config`
+- `conf/` — `base.config` (resources), `test.config`. Container images are set in
+  `nextflow.config`: each released module's `conf/module.config` is included, and
+  local-module images are pinned in its `process {}` block. Nothing uses `:latest`
+  except `-profile dev`
 - `assets/test/` — marker-file fixtures for `-stub` smoke runs
 
 ## Adding a module
@@ -96,8 +99,10 @@ git -C modules/<tool> checkout v<version>
 ```
 
 Record the version in `modules.versions` (the source of truth — the sync
-workflow moves the submodule pointer to match), pin an image for it in
-`conf/containers.config`, then include it in the relevant subworkflow:
+workflow moves the submodule pointer to match), add
+`includeConfig 'modules/<tool>/conf/module.config'` to the module-containers
+section of `nextflow.config` plus a `:latest` line for it in the `dev` profile,
+then include it in the relevant subworkflow:
 
 ```groovy
 include { TOOL_SUBCOMMAND } from '../../modules/<tool>/<subcommand>/main.nf'

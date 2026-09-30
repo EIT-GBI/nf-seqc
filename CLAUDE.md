@@ -76,9 +76,9 @@ Deliberate divergences, all documented in the script's module docstring:
 
 Never hand-edit a submodule pointer to change a version — edit `modules.versions` and let the sync workflow move it, or the two drift.
 
-**Containers come from the module's own config once it is released.** The `nf-mod-*` processes carry no `container` directive. Released repos ship `conf/module.config` assigning `ghcr.io/eit-gbi/nf-mod-<tool>:v<version>`, kept in step with the release by that repo's `release.yml`; `nextflow.config` includes those (currently fastqc, samtools), so moving the submodule moves the image. `conf/containers.config` covers everything else by process name — unreleased nf-mod repos on `latest`, and third-party images.
+**Containers: never `:latest` outside `-profile dev`** (same scheme as `nf-dnaseq`). The `nf-mod-*` processes carry no `container` directive. Released repos ship `conf/module.config` assigning `ghcr.io/eit-gbi/nf-mod-<tool>:v<version>`, kept in step with the release by that repo's `release.yml`; `nextflow.config` includes those before `profiles` (currently fastqc, samtools), so moving the submodule moves the image. An unreleased nf-mod (dorado) is pinned in the same section to the `sha-<short>` image of the exact commit the submodule points at. The `dev` profile points every nf-mod image back at `:latest` for testing unreleased module changes — add a line there for each new module. Local-module images (bases2fastq, nanoplot, multiqc) are pinned in the `process {}` block after `profiles`; `INTEROP_RUN_METRICS` deliberately has none until its image is published.
 
-**Config layering.** `nextflow.config` (manifest, params) → `conf/base.config` (resources) → `modules/*/conf/module.config` (released module images) → `conf/containers.config` (remaining images) → profiles (`docker`/`singularity` add GPU container options, `cluster` sets SLURM queues, `test*` set fixtures) → `outputDir` last.
+**Config layering.** `nextflow.config` (manifest, params) → `conf/base.config` (resources) → `modules/*/conf/module.config` + the unreleased-module pins (images) → profiles (`dev` swaps nf-mod images to `:latest`, `docker`/`singularity` add GPU container options, `cluster` sets SLURM queues, `test*` set fixtures) → local-module images → `outputDir` last.
 
 ## Gotchas that cost time
 
@@ -96,7 +96,7 @@ These were all found empirically and all fail **silently**:
 
 ## Known gaps
 
-- `nf-mod-dorado` has **no git tag or release**, so its submodule tracks the default branch and cannot be pinned in `modules.versions`; its image exists only as `latest` (dorado 0.8.3). It also still hardcodes `publishDir` in `basecaller/main.nf`.
+- `nf-mod-dorado` has **no git tag or release**, so its submodule tracks the default branch and cannot be pinned in `modules.versions`; its image is pinned to `sha-9f93e96`, the build of the commit the submodule points at (dorado 0.8.3). It also still hardcodes `publishDir` in `basecaller/main.nf`.
 - `modules/dorado/main.nf` (the submodule's *root* file) fails to parse: `Invalid process definition -- check for missing or out-of-order section labels`. It is an unused `nf-mod-template` leftover with empty `input:`/`output:` sections; the real process is in `basecaller/main.nf`. Nothing in this pipeline includes it, but it shows as an error in the IDE. Fix is upstream — delete that file in the `nf-mod-dorado` repo.
 - `modules/local/interop/Dockerfile` (InterOp Python bindings + numpy/matplotlib — no public image bundles these) is **not built or published**, so `INTEROP_RUN_METRICS` cannot run for real yet. Either add an image-build workflow to this repo or move the module to `nf-mod-interop`, which inherits `build.yml` from `nf-mod-template`.
 - `collect_illumina_metrics.py`'s parsers and output writers are unit-verified, but the **InterOp reads themselves have never been exercised** — that needs a real run folder and the built image.
