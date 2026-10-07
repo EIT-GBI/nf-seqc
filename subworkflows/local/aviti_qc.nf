@@ -9,6 +9,14 @@
 include { BASES2FASTQ   } from '../../modules/local/bases2fastq/main.nf'
 include { FASTQC_FASTQC } from '../../modules/fastqc/fastqc/main.nf'
 
+// A process output declared as path("*.x") is a single Path when one file
+// matches and a List when several do. `[] + path` does NOT wrap a single Path:
+// Path is Iterable over its directory components, so it yields every parent
+// directory (home, runner, work, ...) as if it were a file. Wrap explicitly.
+def asFileList( files ) {
+    return files instanceof List ? files : [ files ]
+}
+
 workflow AVITI_QC {
 
     take:
@@ -21,7 +29,7 @@ workflow AVITI_QC {
 
     // bases2fastq writes Samples/<project>/<sample>/<sample>_R{1,2}.fastq.gz.
     ch_pairs = BASES2FASTQ.out.fastq.flatMap { meta, fastqs ->
-        def files = ( [] + fastqs )
+        def files = asFileList( fastqs )
 
         if ( !params.include_undetermined ) {
             files = files.findAll { f -> !f.name.startsWith('Unassigned') }
@@ -43,8 +51,8 @@ workflow AVITI_QC {
 
     ch_qc = channel.empty()
         .mix( FASTQC_FASTQC.out.zip.map { _meta, zip -> zip } )
-        .mix( BASES2FASTQ.out.stats.flatMap { _meta, stats -> [] + stats } )
-        .mix( BASES2FASTQ.out.sample_stats.flatMap { _meta, stats -> [] + stats } )
+        .mix( BASES2FASTQ.out.stats.flatMap { _meta, stats -> asFileList( stats ) } )
+        .mix( BASES2FASTQ.out.sample_stats.flatMap { _meta, stats -> asFileList( stats ) } )
 
     ch_versions = ch_versions
         .mix( FASTQC_FASTQC.out.versions_fastqc )
