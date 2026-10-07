@@ -1,31 +1,59 @@
 # .github/workflows/release.yml
+#
+# Same label-driven flow as the nf-mod-* repos, minus the container steps:
+# this repo publishes a pipeline, not an image. Merging a PR to main with
+# exactly one bump:{patch,minor,major} label bumps manifest.version in
+# nextflow.config, tags vX.Y.Z and creates a GitHub Release.
 name: Release on Merge
 
 on:
   pull_request:
     types: [closed]
     branches: [main]
+  # Manual fallback: lets a release be cut without a merge, e.g. if the
+  # label-driven run is ever missed or has to be retried.
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump to apply'
+        required: true
+        type: choice
+        options: [patch, minor, major]
 
 jobs:
   release:
-    # Only run if PR was merged (not just closed) and has a bump label.
-    # Skip on the template repo itself — only scaffolded copies release.
-    if: github.event.pull_request.merged == true && github.event.repository.name != 'nf-template'
+    # Merged PRs only (not merely closed); manual runs always proceed.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      # Short-lived token for the eit-gbi-release-bot GitHub App, which is on
+      # the main ruleset's bypass list. The default GITHUB_TOKEN cannot bypass
+      # rulesets, so pushing to main needs this. Pushes made with an app token
+      # also trigger other workflows, which GITHUB_TOKEN pushes do not.
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          # Elevated token (PAT or GitHub App) whose owner/app is on the
-          # main ruleset's bypass list. The default GITHUB_TOKEN cannot
-          # bypass rulesets, so pushing the bump commit to main needs this.
-          token: ${{ secrets.NF_ORG_PAT }}
+          # The pin check below runs git describe inside each submodule, so
+          # they have to be on disk. fetch-depth: 0 applies to them too, which
+          # is what brings their tags down.
+          submodules: recursive
+          token: ${{ steps.app-token.outputs.token }}
 
-      - name: Determine bump type from labels
+      - name: Determine bump type
         id: bump
         run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "type=${{ inputs.bump }}" >> $GITHUB_OUTPUT
+            exit 0
+          fi
           LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
           if echo "$LABELS" | grep -q "bump:major"; then
             echo "type=major" >> $GITHUB_OUTPUT
@@ -34,8 +62,11 @@ jobs:
           elif echo "$LABELS" | grep -q "bump:patch"; then
             echo "type=patch" >> $GITHUB_OUTPUT
           else
-            echo "No bump label found, skipping release"
-            exit 0
+            # Fail loudly rather than exit 0: a bare `exit 0` only ends this
+            # step, so the job would carry on with an empty bump type and
+            # re-tag the current version.
+            echo "::error::No bump label on the merged PR; cannot determine a version bump."
+            exit 1
           fi
 
       - name: Get current version
@@ -55,6 +86,23 @@ jobs:
           esac
           echo "version=$MAJOR.$MINOR.$PATCH" >> $GITHUB_OUTPUT
 
+      - name: Check submodules are pinned to release tags
+        # A pipeline release must pin reproducible module versions, not
+        # floating commits on a branch.
+        run: |
+          set -euo pipefail
+          FAIL=0
+          while read -r sha path _rest; do
+            TAG=$(git -C "$path" describe --tags --exact-match HEAD 2>/dev/null || echo "")
+            if [ -z "$TAG" ]; then
+              echo "::error::submodule $path is not pinned to a release tag (at ${sha})"
+              FAIL=1
+            else
+              echo "$path -> $TAG"
+            fi
+          done < <(git submodule status --recursive | sed 's/^[+-]//')
+          exit $FAIL
+
       - name: Update nextflow.config
         run: |
           sed -i "s/version\s*=\s*['\"][^'\"]*['\"]/version = '${{ steps.next.outputs.version }}'/" nextflow.config
@@ -69,7 +117,7 @@ jobs:
           git push && git push --tags
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: "v${{ steps.next.outputs.version }}"
           generate_release_notes: true

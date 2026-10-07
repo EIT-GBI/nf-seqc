@@ -22,9 +22,9 @@ jobs:
             echo "Add exactly one of: bump:patch, bump:minor, bump:major"
             echo ""
             echo "Guidance:"
-            echo "  bump:patch  - when you make backward-compatible bug fixes"
-            echo "  bump:minor  - when you add functionality in a backward-compatible manner"
-            echo "  bump:major  - when you make incompatible API changes"
+            echo "  bump:patch  - no change to the code that runs: docs, comments, formatting, CI"
+            echo "  bump:minor  - backwards-compatible change to the code that runs: bug fixes, refactors, features"
+            echo "  bump:major  - breaking change for downstream pipelines or users"
             exit 1
           fi
 

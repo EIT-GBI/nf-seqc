@@ -11,10 +11,20 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Short-lived token for the eit-gbi-release-bot GitHub App, which is on
+      # the main ruleset's bypass list. The default GITHUB_TOKEN cannot bypass
+      # rulesets, so pushing to main needs this. Pushes made with an app token
+      # also trigger other workflows, which GITHUB_TOKEN pushes do not.
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.NF_ORG_PAT }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Compute next MINOR version
         id: next
@@ -45,7 +55,7 @@ jobs:
 
       - name: Create GitHub release
         env:
-          GH_TOKEN: ${{ secrets.NF_ORG_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           NEXT_TAG: ${{ steps.next.outputs.next_tag }}
           CURRENT: ${{ steps.next.outputs.current }}
         run: |

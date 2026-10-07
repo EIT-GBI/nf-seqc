@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main, 'release/**']
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (Nextflow strict syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: nf-core/setup-nextflow@v3
+        with:
+          version: '26.04.4'
+
+      - name: nextflow lint
+        # This repo's own code only. The module submodules are linted in their
+        # own repos (and nf-mod-dorado's unused root main.nf does not parse).
+        run: |
+          nextflow lint -o concise \
+            main.nf subworkflows/local modules/local nextflow.config conf
+
+      - name: No unpinned container images
+        # Every process must resolve to a specific image version, so a given
+        # pipeline revision always runs the same software. :latest is only
+        # for -profile dev.
+        run: |
+          nextflow inspect main.nf -profile test 2>/dev/null \
+            | python3 .github/scripts/check_containers.py
+
+      # TODO: enable once nf-mod-dorado drops publishDir. Fails today on
+      # modules/dorado/basecaller/main.nf, which hardcodes it, so basecalled
+      # output is published twice. Comment lines are ignored, since
+      # modules/local/interop mentions publishDir in a comment.
+      # - name: No publishDir
+      #   run: |
+      #     if grep -rnE --include='*.nf' '^[[:space:]]*publishDir' .; then
+      #       echo "::error::publishDir found; publishing belongs in the output block in main.nf"
+      #       exit 1
+      #     fi
+
+  stub:
+    name: Stub run (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # One per platform. The fixtures under assets/test/ are marker files
+        # and zero-byte reads: they exercise platform detection, sample
+        # discovery, channel wiring and publishing, not the tools themselves.
+        profile: [test, test_aviti, test_nanopore, test_pacbio]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: nf-core/setup-nextflow@v3
+        with:
+          version: '26.04.4'
+
+      - name: Stub run
+        run: nextflow run . -profile ${{ matrix.profile }} -stub-run --outdir results_${{ matrix.profile }}
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: nextflow-log-${{ matrix.profile }}
+          path: .nextflow.log
+          if-no-files-found: ignore
+
+  # TODO: a real `-profile test,docker` run and nf-test, once there are
+  # miniaturised real runs to test against (assets/test/ holds marker files
+  # only).
