@@ -12,18 +12,26 @@ on:
 
 jobs:
   check:
-    # Skip on the template repo itself — only scaffolded pipelines track modules.
-    if: github.repository != 'EIT-GBI/nf-template'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       issues: write
     steps:
+      # Token for the eit-gbi-release-bot GitHub App, shared with the release
+      # workflows so there is one credential to maintain. The app needs
+      # Issues: read and write on this repo to open the tracking issues; the
+      # nf-mod-* repos are public, so reading their releases needs nothing more.
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v4
 
       - name: Check each nf-mod-* for a major update
         env:
-          GH_TOKEN: ${{ secrets.NF_ORG_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
