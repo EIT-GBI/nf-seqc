@@ -32,6 +32,13 @@ jobs:
           nextflow lint -o concise \
             main.nf subworkflows/local modules/local nextflow.config conf
 
+      - name: Submodules match modules.versions
+        # A PR that changes a version in modules.versions must move the
+        # submodule with it, or this CI tests the old module. On Renovate's PRs
+        # sync-submodules-pr.yml does the move; this check holds the PR until
+        # it has (and catches a hand-made PR that forgot to).
+        run: bash .github/scripts/check_submodules.sh
+
       - name: No unpinned container images
         # Every process must resolve to a specific image version, so a given
         # pipeline revision always runs the same software. :latest is only
