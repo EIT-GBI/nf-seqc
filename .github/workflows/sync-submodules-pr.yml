@@ -45,7 +45,7 @@ jobs:
           permission-contents: write
 
       - name: Checkout the PR branch (with submodules)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           submodules: true
