@@ -24,7 +24,7 @@ workflow NANOPORE_QC {
     // barcoded, so the run id is used instead.
     ch_pod5 = ch_run.flatMap { meta, run_dir ->
         def root  = params.pod5_dir ? file(params.pod5_dir, checkIfExists: true) : run_dir
-        def pod5s = ( [] + file("${root}/**/*.pod5") + file("${root}/*.pod5") )
+        def pod5s = ( files("${root}/**/*.pod5") + files("${root}/*.pod5") )
             .findAll { f -> f.exists() }
             .unique()
 

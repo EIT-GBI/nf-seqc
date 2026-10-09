@@ -35,7 +35,7 @@ workflow ILLUMINA_QC {
     // hardcoding; --fastq_dir overrides when the FASTQ live outside the run dir.
     ch_pairs = ch_run.flatMap { meta, run_dir ->
         def root = params.fastq_dir ? file(params.fastq_dir, checkIfExists: true) : run_dir
-        def r1s  = ( [] + file("${root}/**/*_R1_001.fastq.gz") + file("${root}/*_R1_001.fastq.gz") )
+        def r1s  = ( files("${root}/**/*_R1_001.fastq.gz") + files("${root}/*_R1_001.fastq.gz") )
             .findAll { f -> f.exists() }
             .unique()
 

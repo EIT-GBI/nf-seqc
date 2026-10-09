@@ -20,7 +20,7 @@ workflow PACBIO_QC {
     // One BAM per SMRT Cell, or per barcode on a barcoded cell.
     ch_bam = ch_run.flatMap { meta, run_dir ->
         def root = params.bam_dir ? file(params.bam_dir, checkIfExists: true) : run_dir
-        def bams = ( [] + file("${root}/**/*.hifi_reads*.bam") + file("${root}/*.hifi_reads*.bam") )
+        def bams = ( files("${root}/**/*.hifi_reads*.bam") + files("${root}/*.hifi_reads*.bam") )
             .findAll { f -> f.exists() }
             .unique()
 
@@ -38,7 +38,7 @@ workflow PACBIO_QC {
 
     // Instrument-written run reports: CCS yield/quality and the dataset manifest.
     ch_reports = ch_run.flatMap { _meta, run_dir ->
-        ( [] + file("${run_dir}/**/*.ccs_report*") + file("${run_dir}/**/*.consensusreadset.xml") )
+        ( files("${run_dir}/**/*.ccs_report*") + files("${run_dir}/**/*.consensusreadset.xml") )
             .findAll { f -> f.exists() }
             .unique()
     }

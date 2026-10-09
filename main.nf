@@ -19,7 +19,7 @@ include { BATCH_REPORT } from './subworkflows/local/batch_report.nf'
 // Kept as a named function rather than a closure: the Nextflow language server
 // does not resolve closures assigned to local variables.
 def matchingFiles( run_dir, String pattern ) {
-    return ( [] + file("${run_dir}/${pattern}") ).findAll { f -> f.exists() }
+    return files("${run_dir}/${pattern}").findAll { f -> f.exists() }
 }
 
 // Identify the instrument from the marker files each writes at the top of its
