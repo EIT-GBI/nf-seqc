@@ -10,12 +10,13 @@
 
 nf-mod-fastqc=3.0.0
 nf-mod-samtools=1.0.0
+nf-mod-interop=1.0.0
 
 # BLOCKED: nf-mod-dorado has no git tag or published release, so there is
 # nothing for the sync workflow to check out. Its submodule tracks the default
 # branch, so the pipeline is not reproducible on dorado. Cut a release, then add:
 #   nf-mod-dorado=<version>
 #
-# Also pending: interop, bases2fastq and multiqc live in modules/local/ because
+# Also pending: bases2fastq and multiqc live in modules/local/ because
 # no nf-mod-* repo exists for them yet. nanoplot is local until nf-mod-nanoplot
 # accepts unaligned input and has a release.

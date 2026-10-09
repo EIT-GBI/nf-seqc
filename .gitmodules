@@ -7,3 +7,6 @@
 [submodule "modules/samtools"]
 	path = modules/samtools
 	url = https://github.com/EIT-GBI/nf-mod-samtools.git
+[submodule "modules/interop"]
+	path = modules/interop
+	url = https://github.com/EIT-GBI/nf-mod-interop.git

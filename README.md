@@ -44,7 +44,9 @@ The Illumina branch mirrors
 [Automate-Seq-Run-Metrics-Collection](https://github.com/EIT-GBI/Automate-Seq-Run-Metrics-Collection):
 same metric set, same 24 column names, same %Occupied vs %PF tile plot, so rows
 from either tool concatenate into one log. It reads InterOp via Illumina's Python
-bindings plus `RunParameters.xml` and `PrimaryAnalysisMetrics.csv`, and emits:
+bindings plus `RunParameters.xml` and `PrimaryAnalysisMetrics.csv` (the
+`INTEROP_RUN_METRICS` process from
+[nf-mod-interop](https://github.com/EIT-GBI/nf-mod-interop)), and emits:
 
 - `metrics/<run>.run_metrics.csv` — header + one row, the log row for this run
 - `qc/<run>_run_metrics_mqc.tsv` — the same table as a MultiQC section
@@ -84,7 +86,7 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 - `main.nf` — platform detection, dispatch, and the `output {}` publish targets
 - `subworkflows/local/` — one subworkflow per platform, plus `batch_report.nf`
 - `modules/<tool>/` — git submodules from `nf-mod-*` repos
-- `modules/local/` — tools with no `nf-mod-*` repo yet (interop, bases2fastq, nanoplot, multiqc)
+- `modules/local/` — tools with no `nf-mod-*` repo yet (bases2fastq, nanoplot, multiqc)
 - `conf/` — `base.config` (resources), `test.config`. Container images are set in
   `nextflow.config`: each released module's `conf/module.config` is included, and
   local-module images are pinned in its `process {}` block. Nothing uses `:latest`
