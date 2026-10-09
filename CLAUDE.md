@@ -27,7 +27,7 @@ nextflow run . -profile test_nanopore -stub
 nextflow run . -profile test_pacbio -stub
 
 # Real run
-nextflow run . -profile cluster,singularity --input <run_dir> --outdir <dir>
+nextflow run . -profile cluster --input <run_dir> --outdir <dir>   # head job via sbatch; see README
 
 # Config / syntax checks — no linter or test framework is configured
 nextflow config . -profile test
@@ -101,7 +101,7 @@ These were all found empirically and all fail **silently**:
 - `modules/dorado/main.nf` (the submodule's *root* file) fails to parse: `Invalid process definition -- check for missing or out-of-order section labels`. It is an unused `nf-mod-template` leftover with empty `input:`/`output:` sections; the real process is in `basecaller/main.nf`. Nothing in this pipeline includes it, but it shows as an error in the IDE. Fix is upstream — delete that file in the `nf-mod-dorado` repo.
 - `INTEROP_RUN_METRICS` has been run on real InterOp data only for NovaSeq and MiSeq folders (nf-mod-interop's tests). The **NextSeq 2000-only fields** (`Flowcell`, `Cycles`, `TotalReadsPF`, `RunStart`, `LoadingConc`) have never been read from a real NextSeq run.
 - MultiQC parses FastQC, InterOp, bases2fastq, NanoStat and samtools output, but has **no module for PacBio CCS reports** — those are collected but will not appear as report sections until converted to custom content.
-- The `cluster` profile's executor, queue names and `--gres` string are placeholders pending confirmation with the cluster admins.
+- The `cluster` profile targets the GBI sandpit SLURM clusters (checked on sandpit-tokyo, 2026-10-09: `cpu` and `gpu` partitions, GPU nodes `gpu:h100:8`). It switches Apptainer on itself and uses the shared cache `/mnt/lustre/containers/.staging/nf/cache/`. On tokyo, Apptainer exists only on the compute nodes, so the head job must be `sbatch`ed, with Java put on `PATH` by hand (SDKMAN is only loaded by interactive shells).
 
 ## Release conventions
 

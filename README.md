@@ -18,9 +18,34 @@ nextflow run . -profile test_aviti -stub
 nextflow run . -profile test_nanopore -stub
 nextflow run . -profile test_pacbio -stub
 
-# Real run
-nextflow run . -profile cluster,singularity --input /path/to/run_dir --outdir results
+# Real run (GBI cluster: see below)
+nextflow run . -profile cluster --input /path/to/run_dir --outdir results
 ```
+
+### Running on the GBI cluster
+
+`-profile cluster` targets the sandpit SLURM clusters and switches Apptainer on
+by itself; don't add `singularity` to it. Run folders are under
+`/mnt/instrument-data/<instrument>/` (read-only).
+
+On **sandpit-tokyo**, Apptainer exists only on the compute nodes, so the
+Nextflow head job must itself run as a SLURM job. A batch job does not load
+your interactive shell, so put Java and Nextflow on `PATH` explicitly (here
+from SDKMAN and `~/.local/bin`):
+
+```bash
+sbatch -p cpu -c 2 --mem 8G -t 24:00:00 -J nf-seqc -o nf-seqc-%j.out --wrap="
+  export JAVA_HOME=\$HOME/.sdkman/candidates/java/current
+  export PATH=\$JAVA_HOME/bin:\$HOME/.local/bin:\$PATH
+  cd ~/nf-seQC && nextflow run . -profile cluster \
+    --input /mnt/instrument-data/element_aviti_1/<run> \
+    --outdir /mnt/lustre/users/\$USER/nf-seqc/<run> \
+    -w /mnt/lustre/users/\$USER/nextflow-work"
+```
+
+Keep `-w` on Lustre, not the NFS home: bases2fastq writes the full FASTQ set
+into `work/`. Images are cached in the shared
+`/mnt/lustre/containers/.staging/nf/cache/`.
 
 ## Supported platforms
 
