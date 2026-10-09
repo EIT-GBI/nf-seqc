@@ -20,7 +20,7 @@
 //
 
 include { FASTQC_FASTQC        } from '../../modules/fastqc/fastqc/main.nf'
-include { INTEROP_RUN_METRICS  } from '../../modules/local/interop/main.nf'
+include { INTEROP_RUN_METRICS  } from '../../modules/interop/run_metrics/main.nf'
 
 workflow ILLUMINA_QC {
 
