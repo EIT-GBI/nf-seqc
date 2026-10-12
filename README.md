@@ -112,7 +112,7 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 | `--allow_incomplete` | `false` | Illumina: report even without `RTAComplete.txt`/`CopyComplete.txt` |
 | `--basecall.model` | baked-in `sup@v5.0.0` | dorado model path inside the container |
 | `--basecall.modified_bases` | `null` | e.g. `5mCG_5hmCG` to emit MM/ML tags |
-| `--multiqc_config` | — | extra MultiQC config, applied on top of `assets/multiqc_config.yml` (which puts run-level metrics first) |
+| `--multiqc_config` | — | extra MultiQC config, applied on top of `assets/multiqc_config.yml` (report order, and hides bases2fastq plots FastQC already shows) |
 
 ## Layout
 
