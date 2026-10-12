@@ -1,7 +1,9 @@
 # Default MultiQC config for nf-seQC, always applied. A --multiqc_config file is
 # applied after it, so it can override anything here.
 #
-# Report order: run-level metrics first, then per-sample QC.
+# Report order:
+#   Illumina: General Statistics, Run Metrics, FastQC, %Occupied vs %PF plot.
+#   AVITI:    General Statistics, FastQC, bases2fastq.
 
 # General Statistics stays at the top (MultiQC cannot move it). It holds
 # FastQC's columns, one row per FASTQ; merge each sample's R1 and R2 into one
@@ -10,8 +12,17 @@ table_sample_merge:
   "R1": "_R1"
   "R2": "_R2"
 
-# bases2fastq already comes before FastQC. Don't list it in top_modules: in
-# MultiQC 1.35 that runs the module twice.
+# Don't use top_modules for ordering: in MultiQC 1.35 listing bases2fastq there
+# runs the module twice. report_section_order below does the ordering.
+
+# bases2fastq's per-sample plots repeat what FastQC already shows (FastQC runs
+# on every FASTQ anyway). Drop them; its sample table (Q30/Q40, yield, mismatch)
+# and the run-level sections have no FastQC equivalent and stay.
+remove_sections:
+  - base_content       # = fastqc_per_base_sequence_content
+  - n_content          # = fastqc_per_base_n_content
+  - adapter_content    # = fastqc_adapter_content
+  - gc_histogram       # = fastqc_per_sequence_gc_content
 
 # The occupancy plot is a *_mqc.png, whose section id and title would
 # otherwise come from its file name and so change with every run
@@ -26,8 +37,8 @@ sp:
     fn: "*_occupied_vs_pf_mqc.png"
 
 # Modules sort descending by `order` (defaults are small multiples of 10), so
-# these two custom-content modules go to the top, table first. MultiQC 1.35
-# otherwise puts the plot above the table.
+# these explicit values place them ahead of everything else, in this order.
+# Run Metrics (Illumina) and bases2fastq (AVITI) never appear together.
 #
 # Sections within a module sort ascending; each one's default is its position
 # x 10. bases2fastq (MultiQC 1.35) emits, in order: run_qc_metrics_table,
@@ -38,8 +49,12 @@ sp:
 report_section_order:
   illumina_run_metrics:
     order: 1000
+  fastqc:
+    order: 900
   illumina_occupied_vs_pf:
-    order: 990
+    order: 800
+  bases2fastq:
+    order: 800
   run_qc_metrics_table:
     order: 1
   run_metrics_bar:

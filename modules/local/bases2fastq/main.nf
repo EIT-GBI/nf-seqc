@@ -23,9 +23,12 @@ process BASES2FASTQ {
 
     script:
     def args = task.ext.args ?: ''
+    // --skip-multi-qc: bases2fastq otherwise runs its own bundled MultiQC
+    // (1.31), which duplicates BATCH_REPORT and crashed on a real run.
     """
     bases2fastq \\
         ${args} \\
+        --skip-multi-qc \\
         --num-threads ${task.cpus} \\
         ${run_dir} \\
         b2f
