@@ -3,6 +3,12 @@
 #
 # Report order: run-level metrics first, then per-sample QC.
 
+# General Statistics is always drawn first and cannot be reordered. Here it only
+# repeats FastQC's columns (bases2fastq adds none), one row per FASTQ, so on an
+# AVITI run it is ~100 rows that bury the run metrics. The FastQC section
+# below has the same numbers.
+skip_generalstats: true
+
 # bases2fastq already comes before FastQC. Don't list it in top_modules: in
 # MultiQC 1.35 that runs the module twice.
 
