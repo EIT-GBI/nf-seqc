@@ -44,8 +44,16 @@ sbatch -p cpu -c 2 --mem 8G -t 24:00:00 -J nf-seqc -o nf-seqc-%j.out --wrap="
 ```
 
 Keep `-w` on Lustre, not the NFS home: bases2fastq writes the full FASTQ set
-into `work/`. Images are cached in the shared
+into `work/`, and `--outdir` must be on the same filesystem, because results
+are published as hard links. Images are cached in the shared
 `/mnt/lustre/containers/.staging/nf/cache/`.
+
+A bare `-resume` picks up the **most recent** run launched from that directory,
+whatever run it was. If you have launched another run from the same clone
+since, it silently re-runs everything, and for an AVITI run whose data has
+dropped out of the Alluxio cache that is about 2 h of bases2fastq. Resume a
+specific run by its session ID from `nextflow log`
+(`-resume <session-id>`), or launch each run from its own directory.
 
 ## Supported platforms
 
