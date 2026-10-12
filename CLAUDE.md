@@ -93,6 +93,7 @@ These were all found empirically and all fail **silently**:
 - **A module that hardcodes `publishDir` publishes twice** — once from the module, once from the `output {}` tree. `nf-mod-fastqc` v3 and `nf-mod-samtools` v1 removed it; `nf-mod-dorado/basecaller` and `nf-mod-nanoplot` still have it. Check for it before adopting any module.
 - **`eval()` version commands run even under `-stub`, and a non-zero exit fails the whole task.** The existing modules get away with `tool --version | sed ...` because the pipeline's exit status is `sed`'s. Anything that can exit non-zero (e.g. `python3 -c "import x"`) needs `2>/dev/null || echo unknown`.
 - **`error()` inside a channel operator prints your message and then a spurious `Cannot access first() element from an empty List`.** Raise from the workflow body where the value is plain, not from inside a `map`/`flatMap` — see `requireRunComplete()` in `main.nf`.
+- **bases2fastq 2.4.0 ignores `--include-tile`.** It accepts the flag and still logs `240 tiles submitted for processing`. Subset an AVITI test run with `--exclude-tile` instead: `--exclude-tile '^(?!L[12]R06C01S1$).*$'` keeps one tile per lane.
 - **`withLabel` beats a bare `cpus =`.** `conf/test.config` therefore uses `resourceLimits` to cap resources, because setting `process.cpus = 1` would not override `withLabel: process_high`.
 
 ## Known gaps
