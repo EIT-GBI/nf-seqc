@@ -3,10 +3,25 @@
 #
 # Report order: run-level metrics first, then per-sample QC.
 
-# Module order needs no setting: custom content (the Illumina Run Metrics table
-# and occupancy plot) and bases2fastq already come before FastQC. Don't list
-# bases2fastq in top_modules: in MultiQC 1.35 that runs it twice.
+# bases2fastq already comes before FastQC. Don't list it in top_modules: in
+# MultiQC 1.35 that runs the module twice.
 
+# The occupancy plot is a *_mqc.png, whose section id and title would
+# otherwise come from its file name and so change with every run
+# ("261006 VH02427 108 AAJJW55M5 occupied vs pf"). Give it a fixed id, so it
+# can be ordered, and a readable title.
+custom_data:
+  illumina_occupied_vs_pf:
+    section_name: "Illumina % Occupied vs % Pass Filter"
+    description: "Per-tile %Occupied against %PF from InterOp. Bottom-left diagonal: underloaded; central cloud: optimal; near-vertical at high %Occupied: overloaded."
+sp:
+  illumina_occupied_vs_pf:
+    fn: "*_occupied_vs_pf_mqc.png"
+
+# Modules sort descending by `order` (defaults are small multiples of 10), so
+# these two custom-content modules go to the top, table first. MultiQC 1.35
+# otherwise puts the plot above the table.
+#
 # Sections within a module sort ascending; each one's default is its position
 # x 10. bases2fastq (MultiQC 1.35) emits, in order: run_qc_metrics_table,
 # run_manifest_metrics_table, index_assignment_metrics,
@@ -14,6 +29,10 @@
 # then the per-sample sections. Lift the run-level plots up to sit right under
 # the run QC table, ahead of the manifest and index tables.
 report_section_order:
+  illumina_run_metrics:
+    order: 1000
+  illumina_occupied_vs_pf:
+    order: 990
   run_qc_metrics_table:
     order: 1
   run_metrics_bar:
