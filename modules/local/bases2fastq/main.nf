@@ -15,7 +15,9 @@ process BASES2FASTQ {
     tuple val(meta), path("*.fastq.gz"), emit: fastq
     tuple val(meta), path("{RunStats.json,Metrics.csv,RunManifest.csv}"), emit: stats, optional: true
     tuple val(meta), path("*_stats.json"), emit: sample_stats, optional: true
-    tuple val("${task.process}"), val('bases2fastq'), eval('bases2fastq --version 2>&1 | sed "s/^.*version //;s/ .*//" | head -n1'), emit: versions_bases2fastq, topic: versions
+    // bases2fastq prints "bases2fastq version: 2.4.0.2499042781" (note the
+    // colon); take the first version-like token after "version".
+    tuple val("${task.process}"), val('bases2fastq'), eval('bases2fastq --version 2>&1 | sed -nE "s/.*version:?[[:space:]]*([0-9][^ ,]*).*/\\1/p" | head -n1'), emit: versions_bases2fastq, topic: versions
 
     script:
     def args = task.ext.args ?: ''
