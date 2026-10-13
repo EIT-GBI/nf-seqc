@@ -8,6 +8,7 @@
 
 include { BASES2FASTQ   } from '../../modules/local/bases2fastq/main.nf'
 include { FASTQC_FASTQC } from '../../modules/fastqc/fastqc/main.nf'
+include { demuxSummary; readShareTable; demuxSummaryTable } from './demux_report.nf'
 
 // A process output declared as path("*.x") is a single Path when one file
 // matches and a List when several do. `[] + path` does NOT wrap a single Path:
@@ -17,10 +18,25 @@ def asFileList( files ) {
     return files instanceof List ? files : [ files ]
 }
 
+// Polonies per sample from bases2fastq's RunStats.json, as the map
+// demuxSummary() takes; Unassigned is the run total less the samples. null
+// when there is nothing to report on (e.g. the empty file a stub run writes).
+def bases2fastqReads( run_stats ) {
+    if ( !run_stats.size() ) {
+        return null
+    }
+    def stats   = new groovy.json.JsonSlurper().parse( run_stats.toFile() )
+    def samples = stats.SampleStats.collectEntries { s -> [ ( s.SampleName ): s.NumPolonies as long ] }
+    def total   = stats.NumPolonies as long
+    return demuxSummary( samples, total - ( samples.values().sum() ?: 0L ) )
+}
+
 workflow AVITI_QC {
 
     take:
-    ch_run // channel: [ val(meta), path(run_dir) ]
+    ch_run               // channel: [ val(meta), path(run_dir) ]
+    include_undetermined // boolean: --include_undetermined
+    max_undetermined     // number: --max_undetermined, % of reads Unassigned
 
     main:
     ch_versions = channel.empty()
@@ -31,7 +47,7 @@ workflow AVITI_QC {
     ch_pairs = BASES2FASTQ.out.fastq.flatMap { meta, fastqs ->
         def files = asFileList( fastqs )
 
-        if ( !params.include_undetermined ) {
+        if ( !include_undetermined ) {
             files = files.findAll { f -> !f.name.startsWith('Unassigned') }
         }
 
@@ -49,10 +65,25 @@ workflow AVITI_QC {
 
     FASTQC_FASTQC( ch_pairs )
 
+    // flatMap: a missing or empty RunStats.json gives no tables rather than an error
+    ch_demux = BASES2FASTQ.out.stats.flatMap { meta, stats ->
+        def run_stats = asFileList( stats ).find { f -> f.name == 'RunStats.json' }
+        def demux     = run_stats ? bases2fastqReads( run_stats ) : null
+        demux ? [ tuple( meta, demux ) ] : []
+    }
+    ch_read_share = ch_demux
+        .map { _meta, demux -> readShareTable( demux, 'Unassigned' ) }
+        .collectFile( name: 'demux_read_share_mqc.tsv' )
+    ch_demux_summary = ch_demux
+        .map { meta, demux -> demuxSummaryTable( meta.run, demux, max_undetermined, 'bases2fastq RunStats.json', 'Unassigned', 'AVITI_QC' ) }
+        .collectFile( name: 'demux_summary_mqc.tsv' )
+
     ch_qc = channel.empty()
         .mix( FASTQC_FASTQC.out.zip.map { _meta, zip -> zip } )
         .mix( BASES2FASTQ.out.stats.flatMap { _meta, stats -> asFileList( stats ) } )
         .mix( BASES2FASTQ.out.sample_stats.flatMap { _meta, stats -> asFileList( stats ) } )
+        .mix( ch_read_share )
+        .mix( ch_demux_summary )
 
     ch_versions = ch_versions
         .mix( FASTQC_FASTQC.out.versions_fastqc )

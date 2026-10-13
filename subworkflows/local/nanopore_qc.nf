@@ -14,7 +14,9 @@ include { NANOPLOT          } from '../../modules/local/nanoplot/main.nf'
 workflow NANOPORE_QC {
 
     take:
-    ch_run // channel: [ val(meta), path(run_dir) ]
+    ch_run         // channel: [ val(meta), path(run_dir) ]
+    pod5_dir       // file or null: --pod5_dir, where the POD5 live if not in the run dir
+    include_failed // boolean: --include_failed
 
     main:
     ch_versions = channel.empty()
@@ -23,12 +25,12 @@ workflow NANOPORE_QC {
     // sample id; a generic container (pod5/, pod5_pass/) means the run wasn't
     // barcoded, so the run id is used instead.
     ch_pod5 = ch_run.flatMap { meta, run_dir ->
-        def root  = params.pod5_dir ? file(params.pod5_dir, checkIfExists: true) : run_dir
-        def pod5s = ( [] + file("${root}/**/*.pod5") + file("${root}/*.pod5") )
+        def root  = pod5_dir ?: run_dir
+        def pod5s = ( files("${root}/**/*.pod5") + files("${root}/*.pod5") )
             .findAll { f -> f.exists() }
             .unique()
 
-        if ( !params.include_failed ) {
+        if ( !include_failed ) {
             pod5s = pod5s.findAll { f -> !f.toString().contains('_fail') }
         }
         if ( !pod5s ) {

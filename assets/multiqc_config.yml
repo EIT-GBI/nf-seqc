@@ -1,0 +1,81 @@
+# Default MultiQC config for nf-seqc, always applied. A --multiqc_config file is
+# applied after it, so it can override anything here.
+#
+# Report order:
+#   Illumina: General Statistics, Run Metrics, Demultiplexing, FastQC,
+#             BCL Convert, %Occupied vs %PF plot.
+#   AVITI:    General Statistics, Demultiplexing, FastQC, bases2fastq.
+# Demultiplexing and the % Reads / Loading columns come from
+# subworkflows/local/demux_report.nf, for both platforms.
+
+# General Statistics stays at the top (MultiQC cannot move it). It holds
+# FastQC's columns, one row per FASTQ; merge each sample's R1 and R2 into one
+# row, so an AVITI run shows one row per sample (~50) rather than per file.
+table_sample_merge:
+  "R1": "_R1"
+  "R2": "_R2"
+
+# BCL Convert names FASTQ <sample>_S<n>[_L<lane>]_R1_001.fastq.gz, so FastQC
+# rows come out as "<sample>_S1_L001" while the read-share column (from
+# Demultiplex_Stats.csv) is keyed on "<sample>". Strip the suffix so the two
+# land on one row.
+extra_fn_clean_exts:
+  - type: regex
+    pattern: '_S\d+(_L\d{3})?(?=_R[12]|$)'
+
+# Don't use top_modules for ordering: in MultiQC 1.35 listing bases2fastq there
+# runs the module twice. report_section_order below does the ordering.
+
+# bases2fastq's per-sample plots repeat what FastQC already shows (FastQC runs
+# on every FASTQ anyway). Drop them; its sample table (Q30/Q40, yield, mismatch)
+# and the run-level sections have no FastQC equivalent and stay.
+remove_sections:
+  - base_content       # = fastqc_per_base_sequence_content
+  - n_content          # = fastqc_per_base_n_content
+  - adapter_content    # = fastqc_adapter_content
+  - gc_histogram       # = fastqc_per_sequence_gc_content
+
+# The occupancy plot is a *_mqc.png, whose section id and title would
+# otherwise come from its file name and so change with every run
+# ("261006 VH02427 108 AAJJW55M5 occupied vs pf"). Give it a fixed id, so it
+# can be ordered, and a readable title.
+custom_data:
+  illumina_occupied_vs_pf:
+    section_name: "Illumina % Occupied vs % Pass Filter"
+    description: "Per-tile %Occupied against %PF from InterOp. Underloaded: median %Occupied below 90%. Overloaded: %Occupied above that but median %PF below 65%. Thresholds are shared with the Concerns column of the Run Metrics table."
+sp:
+  illumina_occupied_vs_pf:
+    fn: "*_occupied_vs_pf_mqc.png"
+
+# Modules sort descending by `order` (defaults are small multiples of 10), so
+# these explicit values place them ahead of everything else, in this order.
+# Run Metrics + BCL Convert (Illumina) and bases2fastq (AVITI) never appear
+# together.
+#
+# Sections within a module sort ascending; each one's default is its position
+# x 10. bases2fastq (MultiQC 1.35) emits, in order: run_qc_metrics_table,
+# run_manifest_metrics_table, index_assignment_metrics,
+# index_unassignment_metrics, run_metrics_bar, bq_hist, per_cycle_quality,
+# then the per-sample sections. Lift the run-level plots up to sit right under
+# the run QC table, ahead of the manifest and index tables.
+report_section_order:
+  illumina_run_metrics:
+    order: 1000
+  demux_summary:
+    order: 990
+  fastqc:
+    order: 900
+  bclconvert:
+    order: 850
+  illumina_occupied_vs_pf:
+    order: 800
+  bases2fastq:
+    order: 800
+  run_qc_metrics_table:
+    order: 1
+  run_metrics_bar:
+    order: 2
+  bq_hist:
+    order: 3
+  per_cycle_quality:
+    order: 4

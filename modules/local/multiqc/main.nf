@@ -10,7 +10,9 @@ process MULTIQC {
     input:
     path qc_files, stageAs: 'qc/*'
     val  run_id
-    path multiqc_config
+    // One or more configs, applied in order; staged under numbered directories
+    // so two files with the same name cannot collide.
+    path multiqc_configs, stageAs: 'config?/*'
     path software_versions
 
     output:
@@ -20,7 +22,10 @@ process MULTIQC {
 
     script:
     def args   = task.ext.args ?: ''
-    def config = multiqc_config.name != 'NO_FILE' ? "--config ${multiqc_config}" : ''
+    // A single staged file arrives as a Path, which iterates as its directory
+    // components, so wrap it before building the arguments.
+    def config_list = multiqc_configs instanceof List ? multiqc_configs : [ multiqc_configs ]
+    def config = config_list.collect { c -> "--config ${c}" }.join(' ')
     """
     multiqc \\
         ${args} \\

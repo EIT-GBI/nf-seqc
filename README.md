@@ -1,4 +1,4 @@
-# nf-seQC
+# nf-seqc
 
 Batch-level QC for a sequencing run. Point it at the **complete output directory
 of one sequencing run** and it detects which instrument produced it, normalises
@@ -10,7 +10,7 @@ One pipeline run = one sequencing run.
 
 ```bash
 # Clone with submodules — the nf-mod-* modules are git submodules
-git clone --recurse-submodules https://github.com/EIT-GBI/nf-seQC.git
+git clone --recurse-submodules https://github.com/EIT-GBI/nf-seqc.git
 
 # Smoke-test the wiring on the bundled marker-file fixtures (no real data)
 nextflow run . -profile test -stub
@@ -18,9 +18,42 @@ nextflow run . -profile test_aviti -stub
 nextflow run . -profile test_nanopore -stub
 nextflow run . -profile test_pacbio -stub
 
-# Real run
-nextflow run . -profile cluster,singularity --input /path/to/run_dir --outdir results
+# Real run (GBI cluster: see below)
+nextflow run . -profile cluster --input /path/to/run_dir --outdir results
 ```
+
+### Running on the GBI cluster
+
+`-profile cluster` targets the sandpit SLURM clusters and switches Apptainer on
+by itself; don't add `singularity` to it. Run folders are under
+`/mnt/instrument-data/<instrument>/` (read-only).
+
+On **sandpit-tokyo**, Apptainer exists only on the compute nodes, so the
+Nextflow head job must itself run as a SLURM job. A batch job does not load
+your interactive shell, so put Java and Nextflow on `PATH` explicitly (here
+from SDKMAN and `~/.local/bin`):
+
+```bash
+sbatch -p cpu -c 2 --mem 8G -t 24:00:00 -J nf-seqc -o nf-seqc-%j.out --wrap="
+  export JAVA_HOME=\$HOME/.sdkman/candidates/java/current
+  export PATH=\$JAVA_HOME/bin:\$HOME/.local/bin:\$PATH
+  cd ~/nf-seqc && nextflow run . -profile cluster \
+    --input /mnt/instrument-data/element_aviti_1/<run> \
+    --outdir /mnt/lustre/users/\$USER/nf-seqc/<run> \
+    -w /mnt/lustre/users/\$USER/nextflow-work"
+```
+
+Keep `-w` on Lustre, not the NFS home: bases2fastq writes the full FASTQ set
+into `work/`, and `--outdir` must be on the same filesystem, because results
+are published as hard links. Images are cached in the shared
+`/mnt/lustre/containers/.staging/nf/cache/`.
+
+A bare `-resume` picks up the **most recent** run launched from that directory,
+whatever run it was. If you have launched another run from the same clone
+since, it silently re-runs everything, and for an AVITI run whose data has
+dropped out of the Alluxio cache that is about 2 h of bases2fastq. Resume a
+specific run by its session ID from `nextflow log`
+(`-resume <session-id>`), or launch each run from its own directory.
 
 ## Supported platforms
 
@@ -29,7 +62,7 @@ with `--platform illumina|aviti|nanopore|pacbio`.
 
 | Platform | Detected by | Reads delivered | QC |
 | --- | --- | --- | --- |
-| Illumina NextSeq | `RunInfo.xml` | already demultiplexed on-instrument, left in place | FastQC + InterOp run metrics (see below) |
+| Illumina NextSeq | `RunInfo.xml` | already demultiplexed on-instrument, left in place | FastQC + InterOp run metrics (see below) + BCL Convert demultiplexing reports |
 | Element AVITI | `RunParameters.json` | `bases2fastq` writes FASTQ to `<outdir>/reads` | FastQC + RunStats/Metrics |
 | ONT PromethION P24 | `final_summary_*.txt`, `*.pod5` | `dorado` basecalls on **GPU** to uBAM, then FASTQ | NanoPlot |
 | PacBio Revio | `*.consensusreadset.xml`, `*.hifi_reads*.bam` | HiFi uBAM already final, left in place | NanoPlot + samtools flagstat |
@@ -77,9 +110,10 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 | `--include_undetermined` | `false` | QC the Undetermined/Unassigned reads too |
 | `--include_failed` | `false` | include `pod5_fail` / unassigned PacBio BAM |
 | `--allow_incomplete` | `false` | Illumina: report even without `RTAComplete.txt`/`CopyComplete.txt` |
+| `--max_undetermined` | `15` | Illumina and AVITI: flag the run as high in the Demultiplexing table, plus a log warning, above this % of Undetermined (Illumina) or Unassigned (AVITI) reads |
 | `--basecall.model` | baked-in `sup@v5.0.0` | dorado model path inside the container |
 | `--basecall.modified_bases` | `null` | e.g. `5mCG_5hmCG` to emit MM/ML tags |
-| `--multiqc_config` | — | extra MultiQC config |
+| `--multiqc_config` | — | extra MultiQC config, applied on top of `assets/multiqc_config.yml` (report order, and hides bases2fastq plots FastQC already shows) |
 
 ## Layout
 

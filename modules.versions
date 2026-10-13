@@ -10,7 +10,7 @@
 
 nf-mod-fastqc=3.0.0
 nf-mod-samtools=1.0.0
-nf-mod-interop=1.1.0
+nf-mod-interop=1.3.0
 
 # BLOCKED: nf-mod-dorado has no git tag or published release, so there is
 # nothing for the sync workflow to check out. Its submodule tracks the default

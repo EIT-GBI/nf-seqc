@@ -10,9 +10,10 @@ include { MULTIQC } from '../../modules/local/multiqc/main.nf'
 workflow BATCH_REPORT {
 
     take:
-    ch_qc       // channel: path — flat QC files from the platform subworkflow
-    ch_versions // channel: [ val(process), val(tool), val(version) ]
-    ch_run_id   // channel: val(run_id)
+    ch_qc          // channel: path — flat QC files from the platform subworkflow
+    ch_versions    // channel: [ val(process), val(tool), val(version) ]
+    ch_run_id      // channel: val(run_id)
+    multiqc_config // file or null: --multiqc_config, applied after the default
 
     main:
     ch_software_versions = ch_versions
@@ -20,9 +21,13 @@ workflow BATCH_REPORT {
         .unique()
         .collectFile( name: 'software_versions.yml', newLine: true, sort: true )
 
-    ch_config = params.multiqc_config
-        ? channel.value( file(params.multiqc_config, checkIfExists: true) )
-        : channel.value( file("${projectDir}/assets/NO_FILE") )
+    // The pipeline's own config always applies; --multiqc_config is layered on
+    // top of it, so it can override anything there.
+    def configs = [ file("${projectDir}/assets/multiqc_config.yml", checkIfExists: true) ]
+    if ( multiqc_config ) {
+        configs << multiqc_config
+    }
+    ch_config = channel.value( configs )
 
     MULTIQC( ch_qc.collect(), ch_run_id, ch_config, ch_software_versions )
 

@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this pipeline is for
 
-nf-seQC takes the **complete output directory of one sequencing run** and reports QC for the **batch/run**, across four instruments. One pipeline run = one sequencing run.
+nf-seqc takes the **complete output directory of one sequencing run** and reports QC for the **batch/run**, across four instruments. One pipeline run = one sequencing run.
 
 | Platform | Native run output | Reads | QC source |
 | --- | --- | --- | --- |
-| Illumina NextSeq | `RunInfo.xml`, `RunParameters.xml`, `InterOp/`, `PrimaryAnalysisMetrics/` | demultiplexed on-instrument, left in place | FastQC + InterOp (%PF, %occupied, Q30, phasing, PhiX error — none of which reach the FASTQ) |
+| Illumina NextSeq | `RunInfo.xml`, `RunParameters.xml`, `InterOp/`, `PrimaryAnalysisMetrics/` | demultiplexed on-instrument, left in place | FastQC + InterOp (%PF, %occupied, Q30, phasing, PhiX error — none of which reach the FASTQ) + on-instrument BCL Convert `Reports/` |
 | Element AVITI | `RunParameters.json` | none in the run folder — `bases2fastq` is part of this pipeline's job | FastQC + `RunStats.json`/`Metrics.csv` |
 | ONT PromethION P24 | POD5, `final_summary_*.txt` | `dorado basecaller` (GPU) → uBAM → `samtools fastq` | NanoPlot |
 | PacBio Revio | HiFi reads as unaligned BAM, `*.consensusreadset.xml`, CCS reports | already final, delivered as uBAM | NanoPlot + `samtools flagstat` |
@@ -27,7 +27,7 @@ nextflow run . -profile test_nanopore -stub
 nextflow run . -profile test_pacbio -stub
 
 # Real run
-nextflow run . -profile cluster,singularity --input <run_dir> --outdir <dir>
+nextflow run . -profile cluster --input <run_dir> --outdir <dir>   # head job via sbatch; see README
 
 # Config / syntax checks — no linter or test framework is configured
 nextflow config . -profile test
@@ -93,6 +93,9 @@ These were all found empirically and all fail **silently**:
 - **A module that hardcodes `publishDir` publishes twice** — once from the module, once from the `output {}` tree. `nf-mod-fastqc` v3 and `nf-mod-samtools` v1 removed it; `nf-mod-dorado/basecaller` and `nf-mod-nanoplot` still have it. Check for it before adopting any module.
 - **`eval()` version commands run even under `-stub`, and a non-zero exit fails the whole task.** The existing modules get away with `tool --version | sed ...` because the pipeline's exit status is `sed`'s. Anything that can exit non-zero (e.g. `python3 -c "import x"`) needs `2>/dev/null || echo unknown`.
 - **`error()` inside a channel operator prints your message and then a spurious `Cannot access first() element from an empty List`.** Raise from the workflow body where the value is plain, not from inside a `map`/`flatMap` — see `requireRunComplete()` in `main.nf`.
+- **bases2fastq 2.4.0 ignores `--include-tile`.** It accepts the flag and still logs `240 tiles submitted for processing`. Subset an AVITI test run with `--exclude-tile` instead: `--exclude-tile '^(?!L[12]R06C01S1$).*$'` keeps one tile per lane.
+- **Two `Demultiplex_Stats.csv` on a NextSeq 2000.** The one under `Analysis/<n>/Data/RunInstrumentAnalyticsMetrics/` has samples renamed `0001`… and indices `ELIDED`; only `Reports/` has real names. MultiQC's bclconvert module also needs a `RunInfo.xml` in the *same directory* as `Demultiplex_Stats.csv` (it logs an error and skips both otherwise) — `Reports/` has none, so the run root's is staged alongside. It does not read `Adapter_Metrics.csv` (1.35), and its "Clusters/run" is a share of *assigned* reads; the `% Reads` General Statistics column counts Undetermined too.
+- **`-resume` does not see changes to a module binary.** Editing `modules/*/resources/usr/bin/*` (e.g. `collect_illumina_metrics.py`) leaves the task cached with its old output; the cache key covers the process script, not the files it calls. After changing one, run without `-resume` or delete that task's work directory.
 - **`withLabel` beats a bare `cpus =`.** `conf/test.config` therefore uses `resourceLimits` to cap resources, because setting `process.cpus = 1` would not override `withLabel: process_high`.
 
 ## Known gaps
@@ -100,8 +103,8 @@ These were all found empirically and all fail **silently**:
 - `nf-mod-dorado` has **no git tag or release**, so its submodule tracks the default branch and cannot be pinned in `modules.versions`; its image is pinned to `sha-9f93e96`, the build of the commit the submodule points at (dorado 0.8.3). It also still hardcodes `publishDir` in `basecaller/main.nf`.
 - `modules/dorado/main.nf` (the submodule's *root* file) fails to parse: `Invalid process definition -- check for missing or out-of-order section labels`. It is an unused `nf-mod-template` leftover with empty `input:`/`output:` sections; the real process is in `basecaller/main.nf`. Nothing in this pipeline includes it, but it shows as an error in the IDE. Fix is upstream — delete that file in the `nf-mod-dorado` repo.
 - `INTEROP_RUN_METRICS` has been run on real InterOp data only for NovaSeq and MiSeq folders (nf-mod-interop's tests). The **NextSeq 2000-only fields** (`Flowcell`, `Cycles`, `TotalReadsPF`, `RunStart`, `LoadingConc`) have never been read from a real NextSeq run.
-- MultiQC parses FastQC, InterOp, bases2fastq, NanoStat and samtools output, but has **no module for PacBio CCS reports** — those are collected but will not appear as report sections until converted to custom content.
-- The `cluster` profile's executor, queue names and `--gres` string are placeholders pending confirmation with the cluster admins.
+- MultiQC parses FastQC, bases2fastq (`RunStats.json`), BCL Convert (`Analysis/<n>/Data/Reports/`), NanoStat and samtools output; the InterOp table and plot arrive as custom content (`*_mqc.*`). **The bases2fastq module only exists from MultiQC 1.29** — on 1.25.1 the AVITI report silently had no bases2fastq section — so never pin MultiQC below that. It has **no module for PacBio CCS reports** — those are collected but will not appear as report sections until converted to custom content.
+- The `cluster` profile targets the GBI sandpit SLURM clusters (checked on sandpit-tokyo, 2026-10-09: `cpu` and `gpu` partitions, GPU nodes `gpu:h100:8`). It switches Apptainer on itself and uses the shared cache `/mnt/lustre/containers/.staging/nf/cache/`. On tokyo, Apptainer exists only on the compute nodes, so the head job must be `sbatch`ed, with Java put on `PATH` by hand (SDKMAN is only loaded by interactive shells).
 
 ## Release conventions
 
@@ -111,4 +114,4 @@ These were all found empirically and all fail **silently**:
 - On merge, `release.yml` bumps the version, commits `chore: bump version to X.Y.Z [skip ci]`, tags, and releases.
 - Commit prefixes `feat(deps)` and `chore(submodules)` are load-bearing for the automation above — preserve them when squashing or rewriting.
 
-`nf-illumina-qc` in the org was an earlier testing pipeline and may be deleted; nf-seQC supersedes it.
+`nf-illumina-qc` in the org was an earlier testing pipeline and may be deleted; nf-seqc supersedes it.
