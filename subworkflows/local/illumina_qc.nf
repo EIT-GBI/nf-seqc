@@ -58,10 +58,19 @@ def bclConvertFiles( reports, run_dir ) {
     return [ demux, run_dir.resolve('RunInfo.xml') ] + extra
 }
 
+// Cell backgrounds for flag columns: the occupancy plot's zone colours
+// (steelblue / green / firebrick) semi-transparent, so the text stays readable on light and dark themes.
+// Header `bgcols` is how MultiQC's own modules flag categories; the same map
+// is in nf-mod-interop's Run Metrics table.
+def bgcols( Map colours ) {
+    return [ "#         bgcols:" ] + colours.collect { value, colour -> "#             ${value}: '${colour}'" }
+}
+def loadingBgcols() { return [ under: 'rgba(70,130,180,0.4)', optimal: 'rgba(0,128,0,0.35)', over: 'rgba(178,34,34,0.4)' ] }
+
 // Reads per SampleID from Demultiplex_Stats.csv, summed over lanes. Returns
-// [ samples: [id: reads], undetermined: reads, total: reads, cutoff: %], or
-// null when there is nothing to report on. `cutoff` is half an even split of
-// the demultiplexed reads, as a share of all reads.
+// [ samples: [id: reads], undetermined: reads, total: reads, even: % ], or null
+// when there is nothing to report on. `even` is one sample's share of all
+// reads if the demultiplexed reads were split evenly.
 def demuxReads( stats ) {
     def reads = [:]
     stats.splitCsv( header: true ).each { row ->
@@ -77,19 +86,24 @@ def demuxReads( stats ) {
         samples:      samples,
         undetermined: reads['Undetermined'] ?: 0L,
         total:        total,
-        cutoff:       50.0 * assigned / total / samples.size(),
+        even:         100.0 * assigned / total / samples.size(),
     ]
 }
 
-// MultiQC General Statistics column: each sample's share of the run's reads
-// (Undetermined counted in the total but given no row). The threshold depends
-// on how many samples share the run, so it is computed here and written into
-// the column's own formatting rule: red below half of an even split of the
-// demultiplexed reads.
+// A sample's loading in the pool: under below half an even split, over above
+// twice one, optimal in between.
+def sampleLoading( demux, long reads ) {
+    def pct = 100.0 * reads / demux.total
+    return pct < demux.even / 2 ? 'under' : pct > demux.even * 2 ? 'over' : 'optimal'
+}
+
+// MultiQC General Statistics columns: each sample's share of the run's reads
+// (Undetermined counted in the total but given no row), and its Loading. The
+// cut-offs depend on how many samples share the run, so they are computed
+// here and given in the column description.
 def readShareTable( demux ) {
-    def samples   = demux.samples
-    def total     = demux.total
-    def threshold = demux.cutoff
+    def under = String.format( '%.2f', demux.even / 2 )
+    def over  = String.format( '%.2f', demux.even * 2 )
     def header = [
         "# id: 'illumina_read_share'",
         "# plot_type: 'generalstats'",
@@ -97,32 +111,38 @@ def readShareTable( demux ) {
         "#     pct_reads:",
         "#         title: '% Reads'",
         "#         namespace: 'Demultiplexing'",
-        "#         description: 'Share of all reads in the run, Undetermined included. Red: under half an even split (< ${String.format('%.2f', threshold)}%)'",
+        "#         description: 'Share of all reads in the run, Undetermined included'",
         "#         suffix: '%'",
         "#         min: 0",
         "#         format: '{:,.2f}'",
-        "#         cond_formatting_rules:",
-        "#             fail: [{lt: ${threshold}}]",
-        "Sample\tpct_reads",
+        "#     loading:",
+        "#         title: 'Loading'",
+        "#         namespace: 'Demultiplexing'",
+        "#         description: 'Share of reads against an even split of the pool: under below ${under}%, over above ${over}%'",
+    ] + bgcols( loadingBgcols() ) + [
+        "Sample\tpct_reads\tloading",
     ]
-    def rows = samples.collect { id, n -> "${id}\t${100.0 * n / total}" }
+    def rows = demux.samples.collect { id, n -> "${id}\t${100.0 * n / demux.total}\t${sampleLoading( demux, n )}" }
     return ( header + rows ).join('\n') + '\n'
 }
 
 // Run-level demultiplexing summary, one row, placed under Run Metrics. A high
 // Undetermined share is invisible in General Statistics, which only compares
-// samples with each other, so it gets its own flag: red above
-// --max_undetermined. Also warns in the Nextflow log.
+// samples with each other, so it gets its own flag above --max_undetermined,
+// and a warning in the Nextflow log. No colour-scale bars: in a one-row
+// table every bar is full width, so each number turns into a solid block.
 def demuxSummaryTable( run_id, demux, max_undetermined ) {
     def pct_undetermined = 100.0 * demux.undetermined / demux.total
-    def low = demux.samples.count { _id, n -> 100.0 * n / demux.total < demux.cutoff }
-    if ( pct_undetermined > max_undetermined ) {
+    def level = pct_undetermined > max_undetermined ? 'high' : 'ok'
+    if ( level == 'high' ) {
         log.warn "ILLUMINA_QC: ${String.format('%.1f', pct_undetermined)}% of reads in ${run_id} are Undetermined (above --max_undetermined ${max_undetermined}%)."
     }
+    def counts = [ under: 0, optimal: 0, over: 0 ]
+    demux.samples.each { _id, n -> counts[ sampleLoading( demux, n ) ] += 1 }
     def header = [
         "# id: 'illumina_demux_summary'",
         "# section_name: 'Illumina Demultiplexing'",
-        "# description: 'Run-level summary of BCL Convert Demultiplex_Stats.csv. Undetermined is red above ${max_undetermined}% (--max_undetermined); low-share samples are those red in the General Statistics % Reads column.'",
+        "# description: 'Run-level summary of BCL Convert Demultiplex_Stats.csv. Undetermined is high above ${max_undetermined}% (--max_undetermined). Sample loading is the General Statistics Loading column.'",
         "# plot_type: 'table'",
         "# pconfig:",
         "#     id: 'illumina_demux_summary_table'",
@@ -130,29 +150,37 @@ def demuxSummaryTable( run_id, demux, max_undetermined ) {
         "# headers:",
         "#     pct_undetermined:",
         "#         title: 'Undetermined'",
+        "#         scale: false",
         "#         description: 'Share of all reads not assigned to any sample'",
         "#         suffix: '%'",
         "#         min: 0",
         "#         max: 100",
         "#         format: '{:,.2f}'",
-        "#         cond_formatting_rules:",
-        "#             fail: [{gt: ${max_undetermined}}]",
+        "#     undetermined_level:",
+        "#         title: 'Undetermined level'",
+        "#         scale: false",
+        "#         description: 'high above ${max_undetermined}% (--max_undetermined)'",
+    ] + bgcols( [ ok: loadingBgcols().optimal, high: loadingBgcols().over ] ) + [
         "#     samples:",
         "#         title: 'Samples'",
+        "#         scale: false",
         "#         format: '{:,.0f}'",
-        "#     cutoff:",
-        "#         title: 'Low-share cut-off'",
-        "#         description: 'Half an even split of the demultiplexed reads, as a share of all reads'",
-        "#         suffix: '%'",
-        "#         format: '{:,.2f}'",
-        "#     low_share:",
-        "#         title: 'Low-share samples'",
-        "#         description: 'Samples under the cut-off'",
+        "#     under:",
+        "#         title: 'Under'",
+        "#         scale: false",
+        "#         description: 'Samples under half an even split'",
         "#         format: '{:,.0f}'",
-        "#         cond_formatting_rules:",
-        "#             fail: [{gt: 0}]",
-        "Run\tpct_undetermined\tsamples\tcutoff\tlow_share",
-        "${run_id}\t${pct_undetermined}\t${demux.samples.size()}\t${demux.cutoff}\t${low}",
+        "#     optimal:",
+        "#         title: 'Optimal'",
+        "#         scale: false",
+        "#         format: '{:,.0f}'",
+        "#     over:",
+        "#         title: 'Over'",
+        "#         scale: false",
+        "#         description: 'Samples over twice an even split'",
+        "#         format: '{:,.0f}'",
+        "Run\tpct_undetermined\tundetermined_level\tsamples\tunder\toptimal\tover",
+        "${run_id}\t${pct_undetermined}\t${level}\t${demux.samples.size()}\t${counts.under}\t${counts.optimal}\t${counts.over}",
     ]
     return header.join('\n') + '\n'
 }
