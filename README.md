@@ -1,4 +1,4 @@
-# nf-seQC
+# nf-seqc
 
 Batch-level QC for a sequencing run. Point it at the **complete output directory
 of one sequencing run** and it detects which instrument produced it, normalises
@@ -10,7 +10,7 @@ One pipeline run = one sequencing run.
 
 ```bash
 # Clone with submodules — the nf-mod-* modules are git submodules
-git clone --recurse-submodules https://github.com/EIT-GBI/nf-seQC.git
+git clone --recurse-submodules https://github.com/EIT-GBI/nf-seqc.git
 
 # Smoke-test the wiring on the bundled marker-file fixtures (no real data)
 nextflow run . -profile test -stub
@@ -37,7 +37,7 @@ from SDKMAN and `~/.local/bin`):
 sbatch -p cpu -c 2 --mem 8G -t 24:00:00 -J nf-seqc -o nf-seqc-%j.out --wrap="
   export JAVA_HOME=\$HOME/.sdkman/candidates/java/current
   export PATH=\$JAVA_HOME/bin:\$HOME/.local/bin:\$PATH
-  cd ~/nf-seQC && nextflow run . -profile cluster \
+  cd ~/nf-seqc && nextflow run . -profile cluster \
     --input /mnt/instrument-data/element_aviti_1/<run> \
     --outdir /mnt/lustre/users/\$USER/nf-seqc/<run> \
     -w /mnt/lustre/users/\$USER/nextflow-work"

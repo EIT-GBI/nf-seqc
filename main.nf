@@ -1,5 +1,5 @@
 //
-// nf-seQC — batch-level QC for one sequencing run.
+// nf-seqc — batch-level QC for one sequencing run.
 //
 // Input is the complete output directory of a sequencing run. Layout and
 // metadata files differ per instrument, so the platform is detected first and
@@ -81,7 +81,7 @@ workflow {
     def platform = params.platform ?: detectPlatform( run_dir )
     def run_id   = params.run_id ?: run_dir.name
 
-    log.info "nf-seQC: run '${run_id}' on platform '${platform}'"
+    log.info "nf-seqc: run '${run_id}' on platform '${platform}'"
 
     // params are read here, in the entry workflow, and handed to the
     // subworkflows as inputs: reading params anywhere else is deprecated.

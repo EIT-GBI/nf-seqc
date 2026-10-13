@@ -1,4 +1,4 @@
-# Default MultiQC config for nf-seQC, always applied. A --multiqc_config file is
+# Default MultiQC config for nf-seqc, always applied. A --multiqc_config file is
 # applied after it, so it can override anything here.
 #
 # Report order:

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this pipeline is for
 
-nf-seQC takes the **complete output directory of one sequencing run** and reports QC for the **batch/run**, across four instruments. One pipeline run = one sequencing run.
+nf-seqc takes the **complete output directory of one sequencing run** and reports QC for the **batch/run**, across four instruments. One pipeline run = one sequencing run.
 
 | Platform | Native run output | Reads | QC source |
 | --- | --- | --- | --- |
@@ -113,4 +113,4 @@ These were all found empirically and all fail **silently**:
 - On merge, `release.yml` bumps the version, commits `chore: bump version to X.Y.Z [skip ci]`, tags, and releases.
 - Commit prefixes `feat(deps)` and `chore(submodules)` are load-bearing for the automation above — preserve them when squashing or rewriting.
 
-`nf-illumina-qc` in the org was an earlier testing pipeline and may be deleted; nf-seQC supersedes it.
+`nf-illumina-qc` in the org was an earlier testing pipeline and may be deleted; nf-seqc supersedes it.
