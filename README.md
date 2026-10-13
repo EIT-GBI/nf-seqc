@@ -110,7 +110,7 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 | `--include_undetermined` | `false` | QC the Undetermined/Unassigned reads too |
 | `--include_failed` | `false` | include `pod5_fail` / unassigned PacBio BAM |
 | `--allow_incomplete` | `false` | Illumina: report even without `RTAComplete.txt`/`CopyComplete.txt` |
-| `--max_undetermined` | `15` | Illumina: flag the run (red in the Demultiplexing table, plus a log warning) above this % of Undetermined reads |
+| `--max_undetermined` | `15` | Illumina and AVITI: flag the run as high in the Demultiplexing table, plus a log warning, above this % of Undetermined (Illumina) or Unassigned (AVITI) reads |
 | `--basecall.model` | baked-in `sup@v5.0.0` | dorado model path inside the container |
 | `--basecall.modified_bases` | `null` | e.g. `5mCG_5hmCG` to emit MM/ML tags |
 | `--multiqc_config` | — | extra MultiQC config, applied on top of `assets/multiqc_config.yml` (report order, and hides bases2fastq plots FastQC already shows) |

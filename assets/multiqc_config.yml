@@ -4,7 +4,9 @@
 # Report order:
 #   Illumina: General Statistics, Run Metrics, Demultiplexing, FastQC,
 #             BCL Convert, %Occupied vs %PF plot.
-#   AVITI:    General Statistics, FastQC, bases2fastq.
+#   AVITI:    General Statistics, Demultiplexing, FastQC, bases2fastq.
+# Demultiplexing and the % Reads / Loading columns come from
+# subworkflows/local/demux_report.nf, for both platforms.
 
 # General Statistics stays at the top (MultiQC cannot move it). It holds
 # FastQC's columns, one row per FASTQ; merge each sample's R1 and R2 into one
@@ -59,7 +61,7 @@ sp:
 report_section_order:
   illumina_run_metrics:
     order: 1000
-  illumina_demux_summary:
+  demux_summary:
     order: 990
   fastqc:
     order: 900

@@ -24,6 +24,7 @@
 
 include { FASTQC_FASTQC        } from '../../modules/fastqc/fastqc/main.nf'
 include { INTEROP_RUN_METRICS  } from '../../modules/interop/run_metrics/main.nf'
+include { demuxSummary; readShareTable; demuxSummaryTable } from './demux_report.nf'
 
 // BCL Convert's report directory, wherever the FASTQ came from: Analysis/<n>/Data/Reports/
 // on-instrument (NextSeq 1000/2000), Reports/ in a bcl-convert output dir. On-instrument
@@ -58,131 +59,14 @@ def bclConvertFiles( reports, run_dir ) {
     return [ demux, run_dir.resolve('RunInfo.xml') ] + extra
 }
 
-// Cell backgrounds for flag columns: the occupancy plot's zone colours
-// (steelblue / green / firebrick) semi-transparent, so the text stays readable on light and dark themes.
-// Header `bgcols` is how MultiQC's own modules flag categories; the same map
-// is in nf-mod-interop's Run Metrics table.
-def bgcols( Map colours ) {
-    return [ "#         bgcols:" ] + colours.collect { value, colour -> "#             ${value}: '${colour}'" }
-}
-def loadingBgcols() { return [ under: 'rgba(70,130,180,0.4)', optimal: 'rgba(0,128,0,0.35)', over: 'rgba(178,34,34,0.4)' ] }
-
-// Reads per SampleID from Demultiplex_Stats.csv, summed over lanes. Returns
-// [ samples: [id: reads], undetermined: reads, total: reads, even: % ], or null
-// when there is nothing to report on. `even` is one sample's share of all
-// reads if the demultiplexed reads were split evenly.
+// Reads per SampleID from Demultiplex_Stats.csv, summed over lanes, as the
+// map demuxSummary() takes. null when there is nothing to report on.
 def demuxReads( stats ) {
     def reads = [:]
     stats.splitCsv( header: true ).each { row ->
         reads[row.SampleID] = ( reads[row.SampleID] ?: 0L ) + ( row['# Reads'] as long )
     }
-    def total    = reads.values().sum() ?: 0L
-    def samples  = reads.findAll { id, _n -> id != 'Undetermined' }
-    def assigned = samples.values().sum() ?: 0L
-    if ( !total || !samples ) {
-        return null
-    }
-    return [
-        samples:      samples,
-        undetermined: reads['Undetermined'] ?: 0L,
-        total:        total,
-        even:         100.0 * assigned / total / samples.size(),
-    ]
-}
-
-// A sample's loading in the pool: under below half an even split, over above
-// twice one, optimal in between.
-def sampleLoading( demux, long reads ) {
-    def pct = 100.0 * reads / demux.total
-    return pct < demux.even / 2 ? 'under' : pct > demux.even * 2 ? 'over' : 'optimal'
-}
-
-// MultiQC General Statistics columns: each sample's share of the run's reads
-// (Undetermined counted in the total but given no row), and its Loading. The
-// cut-offs depend on how many samples share the run, so they are computed
-// here and given in the column description.
-def readShareTable( demux ) {
-    def under = String.format( '%.2f', demux.even / 2 )
-    def over  = String.format( '%.2f', demux.even * 2 )
-    def header = [
-        "# id: 'illumina_read_share'",
-        "# plot_type: 'generalstats'",
-        "# headers:",
-        "#     pct_reads:",
-        "#         title: '% Reads'",
-        "#         namespace: 'Demultiplexing'",
-        "#         description: 'Share of all reads in the run, Undetermined included'",
-        "#         suffix: '%'",
-        "#         min: 0",
-        "#         format: '{:,.2f}'",
-        "#     loading:",
-        "#         title: 'Loading'",
-        "#         namespace: 'Demultiplexing'",
-        "#         description: 'Share of reads against an even split of the pool: under below ${under}%, over above ${over}%'",
-    ] + bgcols( loadingBgcols() ) + [
-        "Sample\tpct_reads\tloading",
-    ]
-    def rows = demux.samples.collect { id, n -> "${id}\t${100.0 * n / demux.total}\t${sampleLoading( demux, n )}" }
-    return ( header + rows ).join('\n') + '\n'
-}
-
-// Run-level demultiplexing summary, one row, placed under Run Metrics. A high
-// Undetermined share is invisible in General Statistics, which only compares
-// samples with each other, so it gets its own flag above --max_undetermined,
-// and a warning in the Nextflow log. No colour-scale bars: in a one-row
-// table every bar is full width, so each number turns into a solid block.
-def demuxSummaryTable( run_id, demux, max_undetermined ) {
-    def pct_undetermined = 100.0 * demux.undetermined / demux.total
-    def level = pct_undetermined > max_undetermined ? 'high' : 'ok'
-    if ( level == 'high' ) {
-        log.warn "ILLUMINA_QC: ${String.format('%.1f', pct_undetermined)}% of reads in ${run_id} are Undetermined (above --max_undetermined ${max_undetermined}%)."
-    }
-    def counts = [ under: 0, optimal: 0, over: 0 ]
-    demux.samples.each { _id, n -> counts[ sampleLoading( demux, n ) ] += 1 }
-    def header = [
-        "# id: 'illumina_demux_summary'",
-        "# section_name: 'Illumina Demultiplexing'",
-        "# description: 'Run-level summary of BCL Convert Demultiplex_Stats.csv. Undetermined is high above ${max_undetermined}% (--max_undetermined). Sample loading is the General Statistics Loading column.'",
-        "# plot_type: 'table'",
-        "# pconfig:",
-        "#     id: 'illumina_demux_summary_table'",
-        "#     namespace: 'Demultiplexing'",
-        "# headers:",
-        "#     pct_undetermined:",
-        "#         title: 'Undetermined'",
-        "#         scale: false",
-        "#         description: 'Share of all reads not assigned to any sample'",
-        "#         suffix: '%'",
-        "#         min: 0",
-        "#         max: 100",
-        "#         format: '{:,.2f}'",
-        "#     undetermined_level:",
-        "#         title: 'Undetermined level'",
-        "#         scale: false",
-        "#         description: 'high above ${max_undetermined}% (--max_undetermined)'",
-    ] + bgcols( [ ok: loadingBgcols().optimal, high: loadingBgcols().over ] ) + [
-        "#     samples:",
-        "#         title: 'Samples'",
-        "#         scale: false",
-        "#         format: '{:,.0f}'",
-        "#     under:",
-        "#         title: 'Under'",
-        "#         scale: false",
-        "#         description: 'Samples under half an even split'",
-        "#         format: '{:,.0f}'",
-        "#     optimal:",
-        "#         title: 'Optimal'",
-        "#         scale: false",
-        "#         format: '{:,.0f}'",
-        "#     over:",
-        "#         title: 'Over'",
-        "#         scale: false",
-        "#         description: 'Samples over twice an even split'",
-        "#         format: '{:,.0f}'",
-        "Run\tpct_undetermined\tundetermined_level\tsamples\tunder\toptimal\tover",
-        "${run_id}\t${pct_undetermined}\t${level}\t${demux.samples.size()}\t${counts.under}\t${counts.optimal}\t${counts.over}",
-    ]
-    return header.join('\n') + '\n'
+    return demuxSummary( reads.findAll { id, _n -> id != 'Undetermined' }, reads['Undetermined'] ?: 0L )
 }
 
 workflow ILLUMINA_QC {
@@ -241,12 +125,12 @@ workflow ILLUMINA_QC {
     // this column adds its share of all reads, which is what drops when many
     // reads go Undetermined.
     ch_read_share = ch_demux
-        .map { _meta, demux -> readShareTable( demux ) }
-        .collectFile( name: 'illumina_read_share_mqc.tsv' )
+        .map { _meta, demux -> readShareTable( demux, 'Undetermined' ) }
+        .collectFile( name: 'demux_read_share_mqc.tsv' )
 
     ch_demux_summary = ch_demux
-        .map { meta, demux -> demuxSummaryTable( meta.run, demux, max_undetermined ) }
-        .collectFile( name: 'illumina_demux_summary_mqc.tsv' )
+        .map { meta, demux -> demuxSummaryTable( meta.run, demux, max_undetermined, 'BCL Convert Demultiplex_Stats.csv', 'Undetermined', 'ILLUMINA_QC' ) }
+        .collectFile( name: 'demux_summary_mqc.tsv' )
 
     ch_bclconvert = ch_reports
         .map { _meta, run_dir, reports -> bclConvertFiles( reports, run_dir ) }

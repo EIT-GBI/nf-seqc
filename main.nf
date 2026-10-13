@@ -111,7 +111,7 @@ workflow {
         ch_versions = ILLUMINA_QC.out.versions
     }
     else if ( platform == 'aviti' ) {
-        AVITI_QC( ch_run, flag( params.include_undetermined ) )
+        AVITI_QC( ch_run, flag( params.include_undetermined ), max_undetermined )
         ch_reads    = AVITI_QC.out.reads
         ch_qc       = AVITI_QC.out.qc
         ch_versions = AVITI_QC.out.versions
