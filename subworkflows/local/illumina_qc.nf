@@ -22,6 +22,60 @@
 include { FASTQC_FASTQC        } from '../../modules/fastqc/fastqc/main.nf'
 include { INTEROP_RUN_METRICS  } from '../../modules/interop/run_metrics/main.nf'
 
+// BCL Convert's per-sample demultiplexing stats, wherever the FASTQ came from:
+// Analysis/<n>/Data/Demux/ or .../Reports/ on-instrument, Reports/ in a bcl-convert
+// output dir. Several analyses can leave several; the first one sorted wins.
+def demuxStats( root ) {
+    def found = ( files("${root}/**/Demultiplex_Stats.csv") + files("${root}/Demultiplex_Stats.csv") )
+        .findAll { f -> f.exists() }
+        .unique()
+        .sort()
+    if ( !found ) {
+        log.warn "ILLUMINA_QC: no Demultiplex_Stats.csv under ${root}; the report will have no per-sample read share."
+        return null
+    }
+    if ( found.size() > 1 ) {
+        log.warn "ILLUMINA_QC: ${found.size()} Demultiplex_Stats.csv under ${root}; using ${found[0]}."
+    }
+    return found[0]
+}
+
+// MultiQC General Statistics column: each sample's share of the run's reads
+// (Undetermined counted in the total but given no row). The threshold depends
+// on how many samples share the run, so it is computed here and written into
+// the column's own formatting rule: red below half of an even split of the
+// demultiplexed reads.
+def readShareTable( stats ) {
+    def reads = [:]
+    stats.splitCsv( header: true ).each { row ->
+        reads[row.SampleID] = ( reads[row.SampleID] ?: 0L ) + ( row['# Reads'] as long )
+    }
+    def total    = reads.values().sum() ?: 0L
+    def samples  = reads.findAll { id, _n -> id != 'Undetermined' }
+    def assigned = samples.values().sum() ?: 0L
+    if ( !total || !samples ) {
+        return null
+    }
+    def threshold = 50.0 * assigned / total / samples.size()
+    def header = [
+        "# id: 'illumina_read_share'",
+        "# plot_type: 'generalstats'",
+        "# headers:",
+        "#     pct_reads:",
+        "#         title: '% Reads'",
+        "#         namespace: 'Demultiplexing'",
+        "#         description: 'Share of all reads in the run, Undetermined included. Red: under half an even split (< ${String.format('%.2f', threshold)}%)'",
+        "#         suffix: '%'",
+        "#         min: 0",
+        "#         format: '{:,.2f}'",
+        "#         cond_formatting_rules:",
+        "#             fail: [{lt: ${threshold}}]",
+        "Sample\tpct_reads",
+    ]
+    def rows = samples.collect { id, n -> "${id}\t${100.0 * n / total}" }
+    return ( header + rows ).join('\n') + '\n'
+}
+
 workflow ILLUMINA_QC {
 
     take:
@@ -58,12 +112,23 @@ workflow ILLUMINA_QC {
     FASTQC_FASTQC( ch_pairs )
     INTEROP_RUN_METRICS( ch_run )
 
+    // flatMap, not map + filter: ch_run is a value channel, and filtering one
+    // down to nothing never closes it, which leaves MULTIQC waiting forever.
+    ch_read_share = ch_run
+        .flatMap { _meta, run_dir ->
+            def stats = demuxStats( params.fastq_dir ? file(params.fastq_dir) : run_dir )
+            def table = stats ? readShareTable( stats ) : null
+            table ? [ table ] : []
+        }
+        .collectFile( name: 'illumina_read_share_mqc.tsv' )
+
     // The metrics table and occupancy plot go to MultiQC as custom content;
     // the CSV itself is the machine-readable log row and is published separately.
     ch_qc = channel.empty()
         .mix( FASTQC_FASTQC.out.zip.map { _meta, zip -> zip } )
         .mix( INTEROP_RUN_METRICS.out.mqc_table.map { _meta, tsv -> tsv } )
         .mix( INTEROP_RUN_METRICS.out.plot.map { _meta, png -> png } )
+        .mix( ch_read_share )
 
     ch_versions = ch_versions
         .mix( FASTQC_FASTQC.out.versions_fastqc )
