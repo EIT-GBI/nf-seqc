@@ -12,6 +12,14 @@ table_sample_merge:
   "R1": "_R1"
   "R2": "_R2"
 
+# BCL Convert names FASTQ <sample>_S<n>[_L<lane>]_R1_001.fastq.gz, so FastQC
+# rows come out as "<sample>_S1_L001" while the read-share column (from
+# Demultiplex_Stats.csv) is keyed on "<sample>". Strip the suffix so the two
+# land on one row.
+extra_fn_clean_exts:
+  - type: regex
+    pattern: '_S\d+(_L\d{3})?(?=_R[12]|$)'
+
 # Don't use top_modules for ordering: in MultiQC 1.35 listing bases2fastq there
 # runs the module twice. report_section_order below does the ordering.
 
@@ -31,7 +39,7 @@ remove_sections:
 custom_data:
   illumina_occupied_vs_pf:
     section_name: "Illumina % Occupied vs % Pass Filter"
-    description: "Per-tile %Occupied against %PF from InterOp. Bottom-left diagonal: underloaded; central cloud: optimal; near-vertical at high %Occupied: overloaded."
+    description: "Per-tile %Occupied against %PF from InterOp. Underloaded: median %Occupied below 90%. Overloaded: %Occupied above that but median %PF below 65%. Thresholds are shared with the Concerns column of the Run Metrics table."
 sp:
   illumina_occupied_vs_pf:
     fn: "*_occupied_vs_pf_mqc.png"
