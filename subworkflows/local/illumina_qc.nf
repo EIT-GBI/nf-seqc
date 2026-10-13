@@ -58,12 +58,11 @@ def bclConvertFiles( reports, run_dir ) {
     return [ demux, run_dir.resolve('RunInfo.xml') ] + extra
 }
 
-// MultiQC General Statistics column: each sample's share of the run's reads
-// (Undetermined counted in the total but given no row). The threshold depends
-// on how many samples share the run, so it is computed here and written into
-// the column's own formatting rule: red below half of an even split of the
-// demultiplexed reads.
-def readShareTable( stats ) {
+// Reads per SampleID from Demultiplex_Stats.csv, summed over lanes. Returns
+// [ samples: [id: reads], undetermined: reads, total: reads, cutoff: %], or
+// null when there is nothing to report on. `cutoff` is half an even split of
+// the demultiplexed reads, as a share of all reads.
+def demuxReads( stats ) {
     def reads = [:]
     stats.splitCsv( header: true ).each { row ->
         reads[row.SampleID] = ( reads[row.SampleID] ?: 0L ) + ( row['# Reads'] as long )
@@ -74,7 +73,23 @@ def readShareTable( stats ) {
     if ( !total || !samples ) {
         return null
     }
-    def threshold = 50.0 * assigned / total / samples.size()
+    return [
+        samples:      samples,
+        undetermined: reads['Undetermined'] ?: 0L,
+        total:        total,
+        cutoff:       50.0 * assigned / total / samples.size(),
+    ]
+}
+
+// MultiQC General Statistics column: each sample's share of the run's reads
+// (Undetermined counted in the total but given no row). The threshold depends
+// on how many samples share the run, so it is computed here and written into
+// the column's own formatting rule: red below half of an even split of the
+// demultiplexed reads.
+def readShareTable( demux ) {
+    def samples   = demux.samples
+    def total     = demux.total
+    def threshold = demux.cutoff
     def header = [
         "# id: 'illumina_read_share'",
         "# plot_type: 'generalstats'",
@@ -92,6 +107,57 @@ def readShareTable( stats ) {
     ]
     def rows = samples.collect { id, n -> "${id}\t${100.0 * n / total}" }
     return ( header + rows ).join('\n') + '\n'
+}
+
+// Run-level demultiplexing summary, one row, placed under Run Metrics. A high
+// Undetermined share is invisible in General Statistics, which only compares
+// samples with each other, so it gets its own flag: red above
+// --max_undetermined. Also warns in the Nextflow log.
+def demuxSummaryTable( run_id, demux ) {
+    // A value given on the command line arrives as a String, which compares
+    // with a number without error and always false
+    def max_undetermined = params.max_undetermined as BigDecimal
+    def pct_undetermined = 100.0 * demux.undetermined / demux.total
+    def low = demux.samples.count { _id, n -> 100.0 * n / demux.total < demux.cutoff }
+    if ( pct_undetermined > max_undetermined ) {
+        log.warn "ILLUMINA_QC: ${String.format('%.1f', pct_undetermined)}% of reads in ${run_id} are Undetermined (above --max_undetermined ${max_undetermined}%)."
+    }
+    def header = [
+        "# id: 'illumina_demux_summary'",
+        "# section_name: 'Illumina Demultiplexing'",
+        "# description: 'Run-level summary of BCL Convert Demultiplex_Stats.csv. Undetermined is red above ${max_undetermined}% (--max_undetermined); low-share samples are those red in the General Statistics % Reads column.'",
+        "# plot_type: 'table'",
+        "# pconfig:",
+        "#     id: 'illumina_demux_summary_table'",
+        "#     namespace: 'Demultiplexing'",
+        "# headers:",
+        "#     pct_undetermined:",
+        "#         title: 'Undetermined'",
+        "#         description: 'Share of all reads not assigned to any sample'",
+        "#         suffix: '%'",
+        "#         min: 0",
+        "#         max: 100",
+        "#         format: '{:,.2f}'",
+        "#         cond_formatting_rules:",
+        "#             fail: [{gt: ${max_undetermined}}]",
+        "#     samples:",
+        "#         title: 'Samples'",
+        "#         format: '{:,.0f}'",
+        "#     cutoff:",
+        "#         title: 'Low-share cut-off'",
+        "#         description: 'Half an even split of the demultiplexed reads, as a share of all reads'",
+        "#         suffix: '%'",
+        "#         format: '{:,.2f}'",
+        "#     low_share:",
+        "#         title: 'Low-share samples'",
+        "#         description: 'Samples under the cut-off'",
+        "#         format: '{:,.0f}'",
+        "#         cond_formatting_rules:",
+        "#             fail: [{gt: 0}]",
+        "Run\tpct_undetermined\tsamples\tcutoff\tlow_share",
+        "${run_id}\t${pct_undetermined}\t${demux.samples.size()}\t${demux.cutoff}\t${low}",
+    ]
+    return header.join('\n') + '\n'
 }
 
 workflow ILLUMINA_QC {
@@ -134,21 +200,28 @@ workflow ILLUMINA_QC {
     // down to nothing never closes it, which leaves MULTIQC waiting forever on
     // any run without a Demultiplex_Stats.csv.
     ch_reports = ch_run
-        .flatMap { _meta, run_dir ->
+        .flatMap { meta, run_dir ->
             def reports = bclConvertReports( params.fastq_dir ? file(params.fastq_dir) : run_dir )
-            reports ? [ tuple( run_dir, reports ) ] : []
+            reports ? [ tuple( meta, run_dir, reports ) ] : []
         }
+
+    ch_demux = ch_reports
+        .map { meta, _run_dir, reports -> tuple( meta, demuxReads( reports.resolve('Demultiplex_Stats.csv') ) ) }
+        .filter { _meta, demux -> demux }
 
     // bclconvert's own tables report each sample's share of the *assigned* reads;
     // this column adds its share of all reads, which is what drops when many
     // reads go Undetermined.
-    ch_read_share = ch_reports
-        .map { _run_dir, reports -> readShareTable( reports.resolve('Demultiplex_Stats.csv') ) }
-        .filter { table -> table }
+    ch_read_share = ch_demux
+        .map { _meta, demux -> readShareTable( demux ) }
         .collectFile( name: 'illumina_read_share_mqc.tsv' )
 
+    ch_demux_summary = ch_demux
+        .map { meta, demux -> demuxSummaryTable( meta.run, demux ) }
+        .collectFile( name: 'illumina_demux_summary_mqc.tsv' )
+
     ch_bclconvert = ch_reports
-        .map { run_dir, reports -> bclConvertFiles( reports, run_dir ) }
+        .map { _meta, run_dir, reports -> bclConvertFiles( reports, run_dir ) }
 
     // The metrics table and occupancy plot go to MultiQC as custom content;
     // the CSV itself is the machine-readable log row and is published separately.
@@ -157,6 +230,7 @@ workflow ILLUMINA_QC {
         .mix( INTEROP_RUN_METRICS.out.mqc_table.map { _meta, tsv -> tsv } )
         .mix( INTEROP_RUN_METRICS.out.plot.map { _meta, png -> png } )
         .mix( ch_read_share )
+        .mix( ch_demux_summary )
         .mix( ch_bclconvert )
 
     ch_versions = ch_versions
