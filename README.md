@@ -62,7 +62,7 @@ with `--platform illumina|aviti|nanopore|pacbio`.
 
 | Platform | Detected by | Reads delivered | QC |
 | --- | --- | --- | --- |
-| Illumina NextSeq | `RunInfo.xml` | already demultiplexed on-instrument, left in place | FastQC + InterOp run metrics (see below) |
+| Illumina NextSeq | `RunInfo.xml` | already demultiplexed on-instrument, left in place | FastQC + InterOp run metrics (see below) + BCL Convert demultiplexing reports |
 | Element AVITI | `RunParameters.json` | `bases2fastq` writes FASTQ to `<outdir>/reads` | FastQC + RunStats/Metrics |
 | ONT PromethION P24 | `final_summary_*.txt`, `*.pod5` | `dorado` basecalls on **GPU** to uBAM, then FASTQ | NanoPlot |
 | PacBio Revio | `*.consensusreadset.xml`, `*.hifi_reads*.bam` | HiFi uBAM already final, left in place | NanoPlot + samtools flagstat |

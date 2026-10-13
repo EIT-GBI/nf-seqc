@@ -4,7 +4,10 @@
 // NextSeq demultiplexes on-instrument, so FASTQ already exist inside the run
 // folder. This branch therefore only reads: per-sample FASTQ quality (FastQC)
 // and run-level metrics from the binary InterOp files (%PF, %occupied, Q30,
-// phasing, PhiX error rate) — none of which reach the FASTQ at all.
+// phasing, PhiX error rate) — none of which reach the FASTQ at all. The
+// on-instrument BCL Convert reports (index assignment, undetermined barcodes,
+// per-sample Q30) go to MultiQC's bclconvert module, the Illumina counterpart
+// of the bases2fastq section on AVITI.
 //
 // The run-level half mirrors EIT-GBI/Automate-Seq-Run-Metrics-Collection: same
 // metrics, same column names, same %Occupied vs %PF plot. Two behaviours from
@@ -22,22 +25,37 @@
 include { FASTQC_FASTQC        } from '../../modules/fastqc/fastqc/main.nf'
 include { INTEROP_RUN_METRICS  } from '../../modules/interop/run_metrics/main.nf'
 
-// BCL Convert's per-sample demultiplexing stats, wherever the FASTQ came from:
-// Analysis/<n>/Data/Demux/ or .../Reports/ on-instrument, Reports/ in a bcl-convert
-// output dir. Several analyses can leave several; the first one sorted wins.
-def demuxStats( root ) {
+// BCL Convert's report directory, wherever the FASTQ came from: Analysis/<n>/Data/Reports/
+// on-instrument (NextSeq 1000/2000), Reports/ in a bcl-convert output dir. On-instrument
+// runs also leave a Demultiplex_Stats.csv under RunInstrumentAnalyticsMetrics/ with the
+// sample names and indices anonymised (0001, ELIDED), so a directory called Reports wins.
+// Several analyses can leave several; the first one sorted wins.
+def bclConvertReports( root ) {
     def found = ( files("${root}/**/Demultiplex_Stats.csv") + files("${root}/Demultiplex_Stats.csv") )
         .findAll { f -> f.exists() }
         .unique()
         .sort()
-    if ( !found ) {
-        log.warn "ILLUMINA_QC: no Demultiplex_Stats.csv under ${root}; the report will have no per-sample read share."
+    def reports = found.findAll { f -> f.parent.name == 'Reports' } ?: found
+    if ( !reports ) {
+        log.warn "ILLUMINA_QC: no Demultiplex_Stats.csv under ${root}; the report will have no demultiplexing sections."
         return null
     }
-    if ( found.size() > 1 ) {
-        log.warn "ILLUMINA_QC: ${found.size()} Demultiplex_Stats.csv under ${root}; using ${found[0]}."
+    if ( reports.size() > 1 ) {
+        log.warn "ILLUMINA_QC: ${reports.size()} BCL Convert reports under ${root}; using ${reports[0].parent}."
     }
-    return found[0]
+    return reports[0].parent
+}
+
+// Inputs for MultiQC's bclconvert module. It pairs Demultiplex_Stats.csv with a RunInfo.xml
+// in the same directory (all of qc/ once staged), and skips both without either one, so the
+// run's RunInfo.xml goes along only when there is a demux file for it. MultiQC 1.35 does not
+// read Adapter_Metrics.csv.
+def bclConvertFiles( reports, run_dir ) {
+    def demux = reports.resolve('Demultiplex_Stats.csv')
+    def extra = [ 'Quality_Metrics.csv', 'Top_Unknown_Barcodes.csv' ]
+        .collect { name -> reports.resolve(name) }
+        .findAll { f -> f.exists() }
+    return [ demux, run_dir.resolve('RunInfo.xml') ] + extra
 }
 
 // MultiQC General Statistics column: each sample's share of the run's reads
@@ -112,12 +130,20 @@ workflow ILLUMINA_QC {
     FASTQC_FASTQC( ch_pairs )
     INTEROP_RUN_METRICS( ch_run )
 
-    ch_read_share = ch_run
-        .map { _meta, run_dir -> demuxStats( params.fastq_dir ? file(params.fastq_dir) : run_dir ) }
-        .filter { stats -> stats }
-        .map { stats -> readShareTable( stats ) }
+    ch_reports = ch_run
+        .map { _meta, run_dir -> tuple( run_dir, bclConvertReports( params.fastq_dir ? file(params.fastq_dir) : run_dir ) ) }
+        .filter { _run_dir, reports -> reports }
+
+    // bclconvert's own tables report each sample's share of the *assigned* reads;
+    // this column adds its share of all reads, which is what drops when many
+    // reads go Undetermined.
+    ch_read_share = ch_reports
+        .map { _run_dir, reports -> readShareTable( reports.resolve('Demultiplex_Stats.csv') ) }
         .filter { table -> table }
         .collectFile( name: 'illumina_read_share_mqc.tsv' )
+
+    ch_bclconvert = ch_reports
+        .map { run_dir, reports -> bclConvertFiles( reports, run_dir ) }
 
     // The metrics table and occupancy plot go to MultiQC as custom content;
     // the CSV itself is the machine-readable log row and is published separately.
@@ -126,6 +152,7 @@ workflow ILLUMINA_QC {
         .mix( INTEROP_RUN_METRICS.out.mqc_table.map { _meta, tsv -> tsv } )
         .mix( INTEROP_RUN_METRICS.out.plot.map { _meta, png -> png } )
         .mix( ch_read_share )
+        .mix( ch_bclconvert )
 
     ch_versions = ch_versions
         .mix( FASTQC_FASTQC.out.versions_fastqc )

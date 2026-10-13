@@ -2,7 +2,8 @@
 # applied after it, so it can override anything here.
 #
 # Report order:
-#   Illumina: General Statistics, Run Metrics, FastQC, %Occupied vs %PF plot.
+#   Illumina: General Statistics, Run Metrics, BCL Convert, FastQC,
+#             %Occupied vs %PF plot.
 #   AVITI:    General Statistics, FastQC, bases2fastq.
 
 # General Statistics stays at the top (MultiQC cannot move it). It holds
@@ -46,7 +47,8 @@ sp:
 
 # Modules sort descending by `order` (defaults are small multiples of 10), so
 # these explicit values place them ahead of everything else, in this order.
-# Run Metrics (Illumina) and bases2fastq (AVITI) never appear together.
+# Run Metrics + BCL Convert (Illumina) and bases2fastq (AVITI) never appear
+# together.
 #
 # Sections within a module sort ascending; each one's default is its position
 # x 10. bases2fastq (MultiQC 1.35) emits, in order: run_qc_metrics_table,
@@ -57,6 +59,8 @@ sp:
 report_section_order:
   illumina_run_metrics:
     order: 1000
+  bclconvert:
+    order: 950
   fastqc:
     order: 900
   illumina_occupied_vs_pf:
