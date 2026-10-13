@@ -20,7 +20,8 @@ def asFileList( files ) {
 workflow AVITI_QC {
 
     take:
-    ch_run // channel: [ val(meta), path(run_dir) ]
+    ch_run               // channel: [ val(meta), path(run_dir) ]
+    include_undetermined // boolean: --include_undetermined
 
     main:
     ch_versions = channel.empty()
@@ -31,7 +32,7 @@ workflow AVITI_QC {
     ch_pairs = BASES2FASTQ.out.fastq.flatMap { meta, fastqs ->
         def files = asFileList( fastqs )
 
-        if ( !params.include_undetermined ) {
+        if ( !include_undetermined ) {
             files = files.findAll { f -> !f.name.startsWith('Unassigned') }
         }
 

@@ -48,16 +48,23 @@ def detectPlatform( run_dir ) {
     error "Could not identify the sequencing platform of ${run_dir}. Expected one of: RunParameters.json (AVITI), RunInfo.xml (Illumina), final_summary_*.txt or *.pod5 (Nanopore), *.consensusreadset.xml or *.hifi_reads.bam (PacBio). Override with --platform <illumina|aviti|nanopore|pacbio>."
 }
 
+// Command-line values arrive as Strings: "--include_failed false" gives "false",
+// which Groovy truth (and `as boolean`) reads as true. Config defaults arrive
+// typed, so only strings need parsing.
+def flag( value ) {
+    return value instanceof CharSequence ? value.toString().toBoolean() : value as boolean
+}
+
 // Refuse to report on a run the instrument has not finished writing. Mirrors the
 // RTAComplete.txt + CopyComplete.txt gate in
 // EIT-GBI/Automate-Seq-Run-Metrics-Collection: InterOp metrics read from a
 // partial run are misleading rather than merely incomplete.
-def requireRunComplete( run_dir, String run_id, List<String> markers ) {
+def requireRunComplete( run_dir, String run_id, List<String> markers, boolean allow_incomplete ) {
     def missing = markers.findAll { m -> !file("${run_dir}/${m}").exists() }
     if ( !missing ) {
         return
     }
-    if ( !params.allow_incomplete ) {
+    if ( !allow_incomplete ) {
         error "Run ${run_id} looks unfinished — missing ${missing.join(', ')}. Metrics from a partial run are misleading. Pass --allow_incomplete to override."
     }
     log.warn "Run ${run_id} is missing ${missing.join(', ')}; metrics may be incomplete (--allow_incomplete was set)."
@@ -76,6 +83,17 @@ workflow {
 
     log.info "nf-seQC: run '${run_id}' on platform '${platform}'"
 
+    // params are read here, in the entry workflow, and handed to the
+    // subworkflows as inputs: reading params anywhere else is deprecated.
+    // Directory overrides are checked now, so a typo fails before any task.
+    def fastq_dir = params.fastq_dir ? file( params.fastq_dir, checkIfExists: true ) : null
+    def pod5_dir  = params.pod5_dir  ? file( params.pod5_dir,  checkIfExists: true ) : null
+    def bam_dir   = params.bam_dir   ? file( params.bam_dir,   checkIfExists: true ) : null
+    def multiqc_config = params.multiqc_config ? file( params.multiqc_config, checkIfExists: true ) : null
+    // Likewise a number: "2" compares with a BigDecimal without error, and
+    // always false
+    def max_undetermined = params.max_undetermined as BigDecimal
+
     ch_run = channel.value( tuple( [ id: run_id, run: run_id, platform: platform ], run_dir ) )
 
     ch_reads    = channel.empty()
@@ -85,28 +103,28 @@ workflow {
     ch_versions = channel.empty()
 
     if ( platform == 'illumina' ) {
-        requireRunComplete( run_dir, run_id, [ 'RTAComplete.txt', 'CopyComplete.txt' ] )
-        ILLUMINA_QC( ch_run )
+        requireRunComplete( run_dir, run_id, [ 'RTAComplete.txt', 'CopyComplete.txt' ], flag( params.allow_incomplete ) )
+        ILLUMINA_QC( ch_run, fastq_dir, flag( params.include_undetermined ), max_undetermined )
         ch_reads    = ILLUMINA_QC.out.reads
         ch_qc       = ILLUMINA_QC.out.qc
         ch_metrics  = ILLUMINA_QC.out.metrics
         ch_versions = ILLUMINA_QC.out.versions
     }
     else if ( platform == 'aviti' ) {
-        AVITI_QC( ch_run )
+        AVITI_QC( ch_run, flag( params.include_undetermined ) )
         ch_reads    = AVITI_QC.out.reads
         ch_qc       = AVITI_QC.out.qc
         ch_versions = AVITI_QC.out.versions
     }
     else if ( platform == 'nanopore' ) {
-        NANOPORE_QC( ch_run )
+        NANOPORE_QC( ch_run, pod5_dir, flag( params.include_failed ) )
         ch_reads    = NANOPORE_QC.out.reads
         ch_bam      = NANOPORE_QC.out.bam
         ch_qc       = NANOPORE_QC.out.qc
         ch_versions = NANOPORE_QC.out.versions
     }
     else if ( platform == 'pacbio' ) {
-        PACBIO_QC( ch_run )
+        PACBIO_QC( ch_run, bam_dir, flag( params.include_failed ) )
         ch_reads    = PACBIO_QC.out.reads
         ch_qc       = PACBIO_QC.out.qc
         ch_versions = PACBIO_QC.out.versions
@@ -115,7 +133,7 @@ workflow {
         error "Unknown --platform '${platform}'. Expected one of: illumina, aviti, nanopore, pacbio."
     }
 
-    BATCH_REPORT( ch_qc, ch_versions, channel.value(run_id) )
+    BATCH_REPORT( ch_qc, ch_versions, channel.value(run_id), multiqc_config )
 
     // Publish the [meta, files] channels as-is. Two traps to be aware of, both
     // of which fail silently rather than erroring:

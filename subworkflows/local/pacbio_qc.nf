@@ -12,19 +12,21 @@ include { NANOPLOT          } from '../../modules/local/nanoplot/main.nf'
 workflow PACBIO_QC {
 
     take:
-    ch_run // channel: [ val(meta), path(run_dir) ]
+    ch_run         // channel: [ val(meta), path(run_dir) ]
+    bam_dir        // file or null: --bam_dir, where the HiFi BAM live if not in the run dir
+    include_failed // boolean: --include_failed
 
     main:
     ch_versions = channel.empty()
 
     // One BAM per SMRT Cell, or per barcode on a barcoded cell.
     ch_bam = ch_run.flatMap { meta, run_dir ->
-        def root = params.bam_dir ? file(params.bam_dir, checkIfExists: true) : run_dir
+        def root = bam_dir ?: run_dir
         def bams = ( files("${root}/**/*.hifi_reads*.bam") + files("${root}/*.hifi_reads*.bam") )
             .findAll { f -> f.exists() }
             .unique()
 
-        if ( !params.include_failed ) {
+        if ( !include_failed ) {
             bams = bams.findAll { f -> !f.name.contains('unassigned') && !f.name.contains('fail_reads') }
         }
         if ( !bams ) {

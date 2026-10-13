@@ -113,10 +113,7 @@ def readShareTable( demux ) {
 // Undetermined share is invisible in General Statistics, which only compares
 // samples with each other, so it gets its own flag: red above
 // --max_undetermined. Also warns in the Nextflow log.
-def demuxSummaryTable( run_id, demux ) {
-    // A value given on the command line arrives as a String, which compares
-    // with a number without error and always false
-    def max_undetermined = params.max_undetermined as BigDecimal
+def demuxSummaryTable( run_id, demux, max_undetermined ) {
     def pct_undetermined = 100.0 * demux.undetermined / demux.total
     def low = demux.samples.count { _id, n -> 100.0 * n / demux.total < demux.cutoff }
     if ( pct_undetermined > max_undetermined ) {
@@ -163,7 +160,10 @@ def demuxSummaryTable( run_id, demux ) {
 workflow ILLUMINA_QC {
 
     take:
-    ch_run // channel: [ val(meta), path(run_dir) ]
+    ch_run               // channel: [ val(meta), path(run_dir) ]
+    fastq_dir            // file or null: --fastq_dir, where the FASTQ live if not in the run dir
+    include_undetermined // boolean: --include_undetermined
+    max_undetermined     // number: --max_undetermined, % of reads
 
     main:
     ch_versions = channel.empty()
@@ -172,12 +172,12 @@ workflow ILLUMINA_QC {
     // NextSeq 1000/2000, Alignment_*/.../Fastq on older setups. Glob instead of
     // hardcoding; --fastq_dir overrides when the FASTQ live outside the run dir.
     ch_pairs = ch_run.flatMap { meta, run_dir ->
-        def root = params.fastq_dir ? file(params.fastq_dir, checkIfExists: true) : run_dir
+        def root = fastq_dir ?: run_dir
         def r1s  = ( files("${root}/**/*_R1_001.fastq.gz") + files("${root}/*_R1_001.fastq.gz") )
             .findAll { f -> f.exists() }
             .unique()
 
-        if ( !params.include_undetermined ) {
+        if ( !include_undetermined ) {
             r1s = r1s.findAll { f -> !f.name.startsWith('Undetermined') }
         }
         if ( !r1s ) {
@@ -201,7 +201,7 @@ workflow ILLUMINA_QC {
     // any run without a Demultiplex_Stats.csv.
     ch_reports = ch_run
         .flatMap { meta, run_dir ->
-            def reports = bclConvertReports( params.fastq_dir ? file(params.fastq_dir) : run_dir )
+            def reports = bclConvertReports( fastq_dir ?: run_dir )
             reports ? [ tuple( meta, run_dir, reports ) ] : []
         }
 
@@ -217,7 +217,7 @@ workflow ILLUMINA_QC {
         .collectFile( name: 'illumina_read_share_mqc.tsv' )
 
     ch_demux_summary = ch_demux
-        .map { meta, demux -> demuxSummaryTable( meta.run, demux ) }
+        .map { meta, demux -> demuxSummaryTable( meta.run, demux, max_undetermined ) }
         .collectFile( name: 'illumina_demux_summary_mqc.tsv' )
 
     ch_bclconvert = ch_reports
