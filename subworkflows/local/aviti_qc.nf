@@ -8,7 +8,7 @@
 
 include { BASES2FASTQ   } from '../../modules/local/bases2fastq/main.nf'
 include { FASTQC_FASTQC } from '../../modules/fastqc/fastqc/main.nf'
-include { demuxSummary; readShareTable; demuxSummaryTable } from './demux_report.nf'
+include { demuxSummary; barcodeName; readShareTable; demuxSummaryTable; unknownBarcodesTable } from './demux_report.nf'
 
 // A process output declared as path("*.x") is a single Path when one file
 // matches and a List when several do. `[] + path` does NOT wrap a single Path:
@@ -18,17 +18,23 @@ def asFileList( files ) {
     return files instanceof List ? files : [ files ]
 }
 
-// Polonies per sample from bases2fastq's RunStats.json, as the map
-// demuxSummary() takes; Unassigned is the run total less the samples. null
-// when there is nothing to report on (e.g. the empty file a stub run writes).
+// Polonies per sample from bases2fastq's RunStats.json, and each lane's
+// UnassignedSequences, as demuxSummary() takes them; Unassigned is the run
+// total less the samples. null when there is nothing to report on (e.g. the
+// empty file a stub run writes).
 def bases2fastqReads( run_stats ) {
     if ( !run_stats.size() ) {
         return null
     }
-    def stats   = new groovy.json.JsonSlurper().parse( run_stats.toFile() )
-    def samples = stats.SampleStats.collectEntries { s -> [ ( s.SampleName ): s.NumPolonies as long ] }
-    def total   = stats.NumPolonies as long
-    return demuxSummary( samples, total - ( samples.values().sum() ?: 0L ) )
+    def stats    = new groovy.json.JsonSlurper().parse( run_stats.toFile() )
+    def samples  = stats.SampleStats.collectEntries { s -> [ ( s.SampleName ): s.NumPolonies as long ] }
+    def total    = stats.NumPolonies as long
+    def barcodes = ( stats.Lanes ?: [] ).collectMany { lane ->
+        ( lane.UnassignedSequences ?: [] ).collect { u ->
+            [ lane: lane.Lane, index: barcodeName( u.I1, u.I2 ), reads: u.Count as long ]
+        }
+    }
+    return demuxSummary( samples, total - ( samples.values().sum() ?: 0L ), barcodes )
 }
 
 workflow AVITI_QC {
@@ -77,6 +83,12 @@ workflow AVITI_QC {
     ch_demux_summary = ch_demux
         .map { meta, demux -> demuxSummaryTable( meta.run, demux, max_undetermined, 'bases2fastq RunStats.json', 'Unassigned', 'AVITI_QC' ) }
         .collectFile( name: 'demux_summary_mqc.tsv' )
+    ch_unknown_barcodes = ch_demux
+        .flatMap { _meta, demux ->
+            def table = unknownBarcodesTable( demux, 'bases2fastq RunStats.json', 'Unassigned', 10, 'AVITI_QC' )
+            table ? [ table ] : []
+        }
+        .collectFile( name: 'demux_unknown_barcodes_mqc.tsv' )
 
     ch_qc = channel.empty()
         .mix( FASTQC_FASTQC.out.zip.map { _meta, zip -> zip } )
@@ -84,6 +96,7 @@ workflow AVITI_QC {
         .mix( BASES2FASTQ.out.sample_stats.flatMap { _meta, stats -> asFileList( stats ) } )
         .mix( ch_read_share )
         .mix( ch_demux_summary )
+        .mix( ch_unknown_barcodes )
 
     ch_versions = ch_versions
         .mix( FASTQC_FASTQC.out.versions_fastqc )

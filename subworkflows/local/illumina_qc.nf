@@ -24,7 +24,7 @@
 
 include { FASTQC_FASTQC        } from '../../modules/fastqc/fastqc/main.nf'
 include { INTEROP_RUN_METRICS  } from '../../modules/interop/run_metrics/main.nf'
-include { demuxSummary; readShareTable; demuxSummaryTable } from './demux_report.nf'
+include { demuxSummary; barcodeName; readShareTable; demuxSummaryTable; unknownBarcodesTable } from './demux_report.nf'
 
 // BCL Convert's report directory, wherever the FASTQ came from: Analysis/<n>/Data/Reports/
 // on-instrument (NextSeq 1000/2000), Reports/ in a bcl-convert output dir. On-instrument
@@ -59,14 +59,22 @@ def bclConvertFiles( reports, run_dir ) {
     return [ demux, run_dir.resolve('RunInfo.xml') ] + extra
 }
 
-// Reads per SampleID from Demultiplex_Stats.csv, summed over lanes, as the
-// map demuxSummary() takes. null when there is nothing to report on.
+// Reads per SampleID from Demultiplex_Stats.csv, summed over lanes, and the
+// unknown barcodes from the Top_Unknown_Barcodes.csv beside it (if BCL Convert
+// wrote one), as demuxSummary() takes them. null when there is nothing to
+// report on.
 def demuxReads( stats ) {
     def reads = [:]
     stats.splitCsv( header: true ).each { row ->
         reads[row.SampleID] = ( reads[row.SampleID] ?: 0L ) + ( row['# Reads'] as long )
     }
-    return demuxSummary( reads.findAll { id, _n -> id != 'Undetermined' }, reads['Undetermined'] ?: 0L )
+    def unknown  = stats.resolveSibling('Top_Unknown_Barcodes.csv')
+    def barcodes = unknown.exists()
+        ? unknown.splitCsv( header: true ).collect { row ->
+            [ lane: row.Lane, index: barcodeName( row.index, row.index2 ), reads: row['# Reads'] as long ]
+        }
+        : []
+    return demuxSummary( reads.findAll { id, _n -> id != 'Undetermined' }, reads['Undetermined'] ?: 0L, barcodes )
 }
 
 workflow ILLUMINA_QC {
@@ -132,6 +140,13 @@ workflow ILLUMINA_QC {
         .map { meta, demux -> demuxSummaryTable( meta.run, demux, max_undetermined, 'BCL Convert Demultiplex_Stats.csv', 'Undetermined', 'ILLUMINA_QC' ) }
         .collectFile( name: 'demux_summary_mqc.tsv' )
 
+    ch_unknown_barcodes = ch_demux
+        .flatMap { _meta, demux ->
+            def table = unknownBarcodesTable( demux, 'BCL Convert Top_Unknown_Barcodes.csv', 'Undetermined', 10, 'ILLUMINA_QC' )
+            table ? [ table ] : []
+        }
+        .collectFile( name: 'demux_unknown_barcodes_mqc.tsv' )
+
     ch_bclconvert = ch_reports
         .map { _meta, run_dir, reports -> bclConvertFiles( reports, run_dir ) }
 
@@ -143,6 +158,7 @@ workflow ILLUMINA_QC {
         .mix( INTEROP_RUN_METRICS.out.plot.map { _meta, png -> png } )
         .mix( ch_read_share )
         .mix( ch_demux_summary )
+        .mix( ch_unknown_barcodes )
         .mix( ch_bclconvert )
 
     ch_versions = ch_versions

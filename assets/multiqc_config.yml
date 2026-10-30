@@ -1,12 +1,16 @@
 # Default MultiQC config for nf-seqc, always applied. A --multiqc_config file is
 # applied after it, so it can override anything here.
 #
-# Report order:
-#   Illumina: General Statistics, Run Metrics, Demultiplexing, FastQC,
-#             BCL Convert, %Occupied vs %PF plot.
-#   AVITI:    General Statistics, Demultiplexing, FastQC, bases2fastq.
-# Demultiplexing and the % Reads / Loading columns come from
-# subworkflows/local/demux_report.nf, for both platforms.
+# Report order, as asked for by the lab (2026-10): unassigned barcodes, then
+# the run metrics, then the FastQC plots people check first.
+#   Illumina: General Statistics, Undetermined barcodes, Run Metrics,
+#             %Occupied vs %PF plot, FastQC, Demultiplexing, BCL Convert.
+#   AVITI:    General Statistics, Unassigned barcodes, bases2fastq,
+#             FastQC, Demultiplexing.
+# FastQC opens with Sequence Quality Histograms, Per Base Sequence Content and
+# Adapter Content. The barcodes and Demultiplexing tables and the % Reads /
+# Loading columns come from subworkflows/local/demux_report.nf, for both
+# platforms.
 
 # General Statistics stays at the top (MultiQC cannot move it). It holds
 # FastQC's columns, one row per FASTQ; merge each sample's R1 and R2 into one
@@ -49,27 +53,35 @@ sp:
 
 # Modules sort descending by `order` (defaults are small multiples of 10), so
 # these explicit values place them ahead of everything else, in this order.
-# Run Metrics + BCL Convert (Illumina) and bases2fastq (AVITI) never appear
-# together.
+# Run Metrics + %Occupied plot + BCL Convert (Illumina) and bases2fastq (AVITI)
+# never appear together; bases2fastq takes the Run Metrics slot.
+#
+# MultiQC cannot move a section out of its module, which is why the barcodes
+# table is our own (demux_unknown_barcodes) rather than BCL Convert's
+# undetermine_by_lane or bases2fastq's index_unassignment_metrics, both of
+# which stay in their modules further down.
 #
 # Sections within a module sort ascending; each one's default is its position
 # x 10. bases2fastq (MultiQC 1.35) emits, in order: run_qc_metrics_table,
 # run_manifest_metrics_table, index_assignment_metrics,
 # index_unassignment_metrics, run_metrics_bar, bq_hist, per_cycle_quality,
 # then the per-sample sections. Lift the run-level plots up to sit right under
-# the run QC table, ahead of the manifest and index tables.
+# the run QC table, ahead of the manifest and index tables. FastQC's three
+# most-checked plots go first in the same way.
 report_section_order:
-  illumina_run_metrics:
+  demux_unknown_barcodes:
     order: 1000
-  demux_summary:
+  illumina_run_metrics:
+    order: 990
+  illumina_occupied_vs_pf:
+    order: 980
+  bases2fastq:
     order: 990
   fastqc:
     order: 900
-  bclconvert:
+  demux_summary:
     order: 850
-  illumina_occupied_vs_pf:
-    order: 800
-  bases2fastq:
+  bclconvert:
     order: 800
   run_qc_metrics_table:
     order: 1
@@ -79,3 +91,9 @@ report_section_order:
     order: 3
   per_cycle_quality:
     order: 4
+  fastqc_per_base_sequence_quality:
+    order: 1
+  fastqc_per_base_sequence_content:
+    order: 2
+  fastqc_adapter_content:
+    order: 3

@@ -5,6 +5,7 @@
 //
 //   - General Statistics: % Reads and Loading per sample
 //   - Demultiplexing: one run-level row, the unassigned share and its level
+//   - Undetermined barcodes: the commonest index pairs that matched no sample
 //
 
 // Cell backgrounds for flag columns: the occupancy plot's zone colours
@@ -17,10 +18,12 @@ def bgcols( Map colours ) {
 def loadingBgcols() { return [ under: 'rgba(70,130,180,0.4)', optimal: 'rgba(0,128,0,0.35)', over: 'rgba(178,34,34,0.4)' ] }
 
 // samples: [ name: reads ] for the assigned samples; unassigned: reads that
-// went to no sample. Returns [ samples, unassigned, total, even ], or null when
-// there is nothing to report on. `even` is one sample's share of all reads if
-// the assigned reads were split evenly.
-def demuxSummary( Map samples, long unassigned ) {
+// went to no sample; barcodes: the demultiplexer's top unassigned index pairs,
+// as [ lane:, index:, reads: ] maps (empty when it lists none). Returns
+// [ samples, unassigned, total, even, barcodes ], or null when there is nothing
+// to report on. `even` is one sample's share of all reads if the assigned reads
+// were split evenly.
+def demuxSummary( Map samples, long unassigned, List barcodes ) {
     def assigned = samples.values().sum() ?: 0L
     def total    = assigned + unassigned
     if ( !total || !samples ) {
@@ -31,7 +34,13 @@ def demuxSummary( Map samples, long unassigned ) {
         unassigned: unassigned,
         total:      total,
         even:       100.0 * assigned / total / samples.size(),
+        barcodes:   barcodes,
     ]
+}
+
+// An index pair as one string, i7+i5; a single-index run has no second index.
+def barcodeName( index, index2 ) {
+    return index2 ? "${index}+${index2}" : "${index}"
 }
 
 // A sample's loading in the pool: under below half an even split, over above
@@ -128,4 +137,70 @@ def demuxSummaryTable( run_id, demux, max_undetermined, String source, String un
         "${run_id}\t${pct_unassigned}\t${level}\t${demux.samples.size()}\t${counts.under}\t${counts.optimal}\t${counts.over}",
     ]
     return header.join('\n') + '\n'
+}
+
+// The commonest unassigned index pairs, top `per_lane` in each lane, as a
+// table of its own. MultiQC cannot move a section out of its module, and the
+// demultiplexers' own lists sit inside bclconvert / bases2fastq, so this one
+// can be placed at the top of the report. Rows keep lane-then-reads order
+// (sort_rows: false). null when the demultiplexer listed no barcodes.
+//
+// A barcode with at least as many reads as the Loading column's `under`
+// cut-off (half an even split) is as big as a real sample, so it is flagged
+// as a likely missing sample, and warned about in the Nextflow log (prefixed
+// with `caller`).
+def unknownBarcodesTable( demux, String source, String unassigned_label, int per_lane, String caller ) {
+    if ( !demux.barcodes ) {
+        return null
+    }
+    def rows = demux.barcodes
+        .groupBy { b -> b.lane as int }
+        .sort()
+        .collectMany { _lane, bs -> bs.sort { b -> -b.reads }.take( per_lane ) }
+    def sample_sized = demux.even / 2
+    def missing = rows.findAll { b -> 100.0 * b.reads / demux.total >= sample_sized }
+    if ( missing ) {
+        log.warn "${caller}: ${missing.size()} ${unassigned_label} barcode(s) have as many reads as a sample (at least ${String.format('%.2f', sample_sized)}% of the run): ${missing.collect { b -> "L${b.lane} ${b.index}" }.join(', ')}. Check the sample sheet."
+    }
+    def header = [
+        "# id: 'demux_unknown_barcodes'",
+        "# section_name: '${unassigned_label} barcodes'",
+        "# description: 'The ${per_lane} commonest index pairs per lane that matched no sample, from ${source}. A barcode with many reads here is often a sample missing from the sample sheet, or one with its index reverse-complemented. Flagged when a barcode has at least ${String.format('%.2f', sample_sized)}% of all reads, the share below which a sample counts as under-loaded.'",
+        "# plot_type: 'table'",
+        "# pconfig:",
+        "#     id: 'demux_unknown_barcodes_table'",
+        "#     namespace: 'Demultiplexing'",
+        "#     col1_header: 'Lane and barcode'",
+        "#     sort_rows: false",
+        "# headers:",
+        "#     reads:",
+        "#         title: 'Reads'",
+        "#         description: 'Reads with this index pair in this lane'",
+        "#         format: '{:,.0f}'",
+        "#     pct_total:",
+        "#         title: '% of all reads'",
+        "#         description: 'Share of all reads in the run'",
+        "#         suffix: '%'",
+        "#         min: 0",
+        "#         format: '{:,.3f}'",
+        "#     pct_unassigned:",
+        "#         title: '% of ${unassigned_label}'",
+        "#         description: 'Share of all ${unassigned_label} reads in the run'",
+        "#         suffix: '%'",
+        "#         min: 0",
+        "#         format: '{:,.2f}'",
+        "#     flag:",
+        "#         title: 'Flag'",
+        "#         scale: false",
+        "#         description: 'likely missing sample: at least ${String.format('%.2f', sample_sized)}% of all reads, as many as an under-loaded sample'",
+    ] + bgcols( [ 'likely missing sample': loadingBgcols().over ] ) + [
+        "Barcode\treads\tpct_total\tpct_unassigned\tflag",
+    ]
+    def lines = rows.collect { b ->
+        def pct_total      = 100.0 * b.reads / demux.total
+        def pct_unassigned = demux.unassigned ? 100.0 * b.reads / demux.unassigned : 0
+        def flag           = pct_total >= sample_sized ? 'likely missing sample' : ''
+        "L${b.lane} ${b.index}\t${b.reads}\t${pct_total}\t${pct_unassigned}\t${flag}"
+    }
+    return ( header + lines ).join('\n') + '\n'
 }
