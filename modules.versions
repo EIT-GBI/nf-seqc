@@ -13,8 +13,8 @@ nf-mod-samtools=1.0.0
 nf-mod-interop=1.3.0
 
 # BLOCKED: nf-mod-dorado has no git tag or published release, so there is
-# nothing for the sync workflow to check out. Its submodule tracks the default
-# branch, so the pipeline is not reproducible on dorado. Cut a release, then add:
+# nothing for the sync workflow to check out. Its submodule points at the
+# commit of EIT-GBI/nf-mod-dorado#1 (the v1 PR). Once that is released, add:
 #   nf-mod-dorado=<version>
 #
 # Also pending: bases2fastq and multiqc live in modules/local/ because

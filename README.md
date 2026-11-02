@@ -48,6 +48,13 @@ into `work/`, and `--outdir` must be on the same filesystem, because results
 are published as hard links. Images are cached in the shared
 `/mnt/lustre/containers/.staging/nf/cache/`.
 
+The head job pulls any image missing from that cache, and converting the
+11 GB dorado image to SIF needs more memory than an 8 GB head job has
+(`mksquashfs` is OOM-killed). Before the first Nanopore run on a new dorado
+image, pull it once in a job of its own, e.g. `-c 2 --mem 20G`, with
+`APPTAINER_TMPDIR` on Lustre, then move the file into the cache under the name
+Nextflow expects (`ghcr.io-eit-gbi-nf-mod-dorado-<tag>.img`).
+
 A bare `-resume` picks up the **most recent** run launched from that directory,
 whatever run it was. If you have launched another run from the same clone
 since, it silently re-runs everything, and for an AVITI run whose data has
@@ -64,12 +71,15 @@ with `--platform illumina|aviti|nanopore|pacbio`.
 | --- | --- | --- | --- |
 | Illumina NextSeq | `RunInfo.xml` | already demultiplexed on-instrument, left in place | FastQC + InterOp run metrics (see below) + BCL Convert demultiplexing reports |
 | Element AVITI | `RunParameters.json` | `bases2fastq` writes FASTQ to `<outdir>/reads` | FastQC + RunStats/Metrics |
-| ONT PromethION P24 | `final_summary_*.txt`, `*.pod5` | `dorado` basecalls on **GPU** to uBAM, then FASTQ | NanoPlot |
+| ONT PromethION P24 | `final_summary_*.txt`, `*.pod5` | `dorado` basecalls on **GPU** to uBAM, demultiplexes, then FASTQ | NanoPlot + barcode counts |
 | PacBio Revio | `<well>/pb_formats/*.consensusreadset.xml`, `<well>/hifi_reads/*.hifi_reads*.bam` | HiFi uBAM already final, left in place | NanoPlot + per-SMRT-Cell run metrics (P0/P1/P2, HiFi yield, QV) + lima barcode counts |
 
-POD5 are expected to be already split per barcode: each directory containing
-`*.pod5` is treated as one sample, named after that directory. There is no
-`dorado demux` step.
+MinKNOW does not split POD5 cleanly by barcode: `pod5_pass/mixed/` holds part
+of each barcode's reads. So every POD5 folder is basecalled with the run's
+barcoding kit (`--kit-name`, read from `final_summary_*.txt`), and
+`dorado demux` then splits each flow cell's reads by barcode. Samples are named
+after the sample sheet's `alias`, or the barcode. Unclassified reads are counted
+in the Demultiplexing table but not delivered unless `--include_failed`.
 
 ### Illumina run metrics
 
@@ -106,9 +116,10 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 | `--run_id` | run dir name | overrides the run label |
 | `--fastq_dir` | — | Illumina: FASTQ live outside the run folder |
 | `--pod5_dir` | — | Nanopore: POD5 live outside the run folder |
+| `--barcode_kit` | — | Nanopore: barcoding kit (e.g. `SQK-RBK114-24`) when `final_summary` does not name one |
 | `--bam_dir` | — | PacBio: HiFi BAM live outside the run folder |
 | `--include_undetermined` | `false` | QC the Undetermined/Unassigned reads too |
-| `--include_failed` | `false` | include `pod5_fail` (Nanopore), or PacBio `fail_reads` and `unassigned` BAM |
+| `--include_failed` | `false` | include `pod5_fail` and the unclassified reads (Nanopore), or PacBio `fail_reads` and `unassigned` BAM |
 | `--allow_incomplete` | `false` | Report even on an unfinished run: Illumina without `RTAComplete.txt`/`CopyComplete.txt`, PacBio with a SMRT Cell lacking `metadata/*.transferdone` |
 | `--max_undetermined` | `15` | Illumina, AVITI and barcoded PacBio: flag the run as high in the Demultiplexing table, plus a log warning, above this % of Undetermined (Illumina) or Unassigned (AVITI, PacBio Not Barcoded) reads |
 | `--basecall.model` | baked-in `sup@v5.0.0` | dorado model path inside the container |
