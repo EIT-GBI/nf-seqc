@@ -51,7 +51,8 @@ are published as hard links. Images are cached in the shared
 The head job pulls any image missing from that cache, and converting the
 11 GB dorado image to SIF needs more memory than an 8 GB head job has
 (`mksquashfs` is OOM-killed). Before the first Nanopore run on a new dorado
-image, pull it once in a job of its own, e.g. `-c 2 --mem 20G`, with
+image, pull it once in a job of its own, e.g. `-c 2 --mem 24G` (it peaked at
+~20 GB), with
 `APPTAINER_TMPDIR` on Lustre, then move the file into the cache under the name
 Nextflow expects (`ghcr.io-eit-gbi-nf-mod-dorado-<tag>.img`).
 
