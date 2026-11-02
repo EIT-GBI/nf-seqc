@@ -10,7 +10,7 @@
 
 include { ILLUMINA_QC  } from './subworkflows/local/illumina_qc.nf'
 include { AVITI_QC     } from './subworkflows/local/aviti_qc.nf'
-include { NANOPORE_QC  } from './subworkflows/local/nanopore_qc.nf'
+include { NANOPORE_QC; nanoporeUnfinished } from './subworkflows/local/nanopore_qc.nf'
 include { PACBIO_QC; revioUnfinishedCells } from './subworkflows/local/pacbio_qc.nf'
 include { BATCH_REPORT } from './subworkflows/local/batch_report.nf'
 
@@ -120,7 +120,9 @@ workflow {
         ch_versions = AVITI_QC.out.versions
     }
     else if ( platform == 'nanopore' ) {
-        NANOPORE_QC( ch_run, pod5_dir, flag( params.include_failed ) )
+        def unfinished = nanoporeUnfinished( pod5_dir ?: run_dir ).collect { acq -> "${acq}/final_summary_*.txt".toString() }
+        requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
+        NANOPORE_QC( ch_run, pod5_dir, flag( params.include_failed ), params.barcode_kit, params.basecall.model, max_undetermined )
         ch_reads    = NANOPORE_QC.out.reads
         ch_bam      = NANOPORE_QC.out.bam
         ch_qc       = NANOPORE_QC.out.qc
@@ -163,8 +165,10 @@ output {
     reads {
         path 'reads'
     }
+    // Nanopore per-sample uBAM. Renamed after the sample: dorado demux names
+    // them <kit>_barcodeNN.bam under demux/.
     bam {
-        path 'bam'
+        path { meta, bam -> bam >> "bam/${meta.id}.bam" }
     }
     qc {
         path 'qc'

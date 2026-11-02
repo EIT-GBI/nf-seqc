@@ -1,0 +1,9 @@
+instrument=P2S-00001
+position=P2S-00001-A
+flow_cell_id=PAW00001
+sample_id=TestSample
+protocol_group_id=20240101_test
+protocol=sequencing/sequencing_PRO114_DNA_e8_2_400K:FLO-PRO114M:SQK-NBD114-24:400
+protocol_run_id=abcdef12-0000-0000-0000-000000000000
+started=2024-01-01T12:05:00+00:00
+pod5_files_in_final_dest=5
