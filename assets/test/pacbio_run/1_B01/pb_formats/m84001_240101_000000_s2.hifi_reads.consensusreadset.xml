@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Test fixture: the parts of a Revio consensusreadset.xml that nf-seqc reads. -->
+<pbds:ConsensusReadSet xmlns:pbds="http://pacificbiosciences.com/PacBioDatasets.xsd" xmlns:pbmeta="http://pacificbiosciences.com/PacBioCollectionMetadata.xsd" xmlns:pbsample="http://pacificbiosciences.com/PacBioSampleInfo.xsd">
+<pbds:DataSetMetadata><pbmeta:Collections><pbmeta:CollectionMetadata Context="m84001_240101_000000_s2">
+<pbmeta:WellSample Name="pool B"><pbsample:BioSamples><pbsample:BioSample Name="sample 1"><pbsample:DNABarcodes><pbsample:DNABarcode Name="bc2003--bc2003"/></pbsample:DNABarcodes></pbsample:BioSample></pbsample:BioSamples></pbmeta:WellSample>
+</pbmeta:CollectionMetadata></pbmeta:Collections></pbds:DataSetMetadata>
+</pbds:ConsensusReadSet>

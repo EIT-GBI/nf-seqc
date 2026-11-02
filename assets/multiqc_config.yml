@@ -77,6 +77,10 @@ report_section_order:
     order: 980
   bases2fastq:
     order: 990
+  pacbio_run_metrics:
+    order: 990
+  nanostat:
+    order: 900
   fastqc:
     order: 900
   demux_summary:
