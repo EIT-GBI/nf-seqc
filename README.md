@@ -118,6 +118,7 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 | `--fastq_dir` | — | Illumina: FASTQ live outside the run folder |
 | `--pod5_dir` | — | Nanopore: POD5 live outside the run folder |
 | `--barcode_kit` | — | Nanopore: barcoding kit (e.g. `SQK-RBK114-24`) when `final_summary` does not name one |
+| `--min_barcode_reads` | `100` | Nanopore: fewest reads for a barcode to be reported as a sample; reads of smaller barcodes count as unclassified |
 | `--bam_dir` | — | PacBio: HiFi BAM live outside the run folder |
 | `--include_undetermined` | `false` | QC the Undetermined/Unassigned reads too |
 | `--include_failed` | `false` | include `pod5_fail` and the unclassified reads (Nanopore), or PacBio `fail_reads` and `unassigned` BAM |

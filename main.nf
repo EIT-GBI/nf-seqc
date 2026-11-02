@@ -122,7 +122,7 @@ workflow {
     else if ( platform == 'nanopore' ) {
         def unfinished = nanoporeUnfinished( pod5_dir ?: run_dir ).collect { acq -> "${acq}/final_summary_*.txt".toString() }
         requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
-        NANOPORE_QC( ch_run, pod5_dir, flag( params.include_failed ), params.barcode_kit, params.basecall.model, max_undetermined )
+        NANOPORE_QC( ch_run, pod5_dir, flag( params.include_failed ), params.barcode_kit, params.basecall.model, max_undetermined, params.min_barcode_reads as long )
         ch_reads    = NANOPORE_QC.out.reads
         ch_bam      = NANOPORE_QC.out.bam
         ch_qc       = NANOPORE_QC.out.qc

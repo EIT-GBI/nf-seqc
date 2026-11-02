@@ -136,8 +136,9 @@ def ontSamples( List demuxed ) {
 
 // Reads per sample and unclassified, from each flow cell's
 // barcoding_summary.txt (one row per read, streamed: a PromethION flow cell
-// has millions). null when there is no summary to count from.
-def demuxReads( List samples, List summaries ) {
+// has millions), as [ meta, reads: [ id: n ], unclassified: n ]. reads is
+// empty when there is no summary to count from (no barcoded flow cell).
+def barcodeCounts( List samples, List summaries ) {
     def ids        = samples.collectEntries { meta, _bam -> [ ( "${meta.flowcell}/${meta.barcode}".toString() ): meta.id ] }
     def reads      = [:]
     def unassigned = 0L
@@ -165,7 +166,20 @@ def demuxReads( List samples, List summaries ) {
             }
         }
     }
-    return reads ? demuxSummary( reads, unassigned, [] ) : null
+    return [ meta: samples ? samples[0][0] : [:], reads: reads, unclassified: unassigned ]
+}
+
+// A barcode with fewer than `min_reads` reads is not a sample: on a real run
+// a dozen unused barcodes each pick up a read or two from misclassification.
+// Their reads count as unclassified in the Demultiplexing table. null when no
+// barcode has enough reads.
+def demuxAboveCutoff( Map counts, long min_reads ) {
+    def low  = counts.reads.findAll { _id, n -> n < min_reads }
+    def kept = counts.reads.findAll { _id, n -> n >= min_reads }
+    if ( low ) {
+        log.info "NANOPORE_QC: ${low.size()} barcode(s) below --min_barcode_reads ${min_reads}, counted as unclassified, not reported as samples: ${low.collect { id, n -> "${id} (${n})" }.join(', ')}"
+    }
+    return kept ? demuxSummary( kept, counts.unclassified + ( low.values().sum() ?: 0L ), [] ) : null
 }
 
 workflow NANOPORE_QC {
@@ -177,6 +191,7 @@ workflow NANOPORE_QC {
     barcode_kit      // string or null: --barcode_kit, overrides the kit in final_summary
     model            // string: --basecall.model
     max_undetermined // number: --max_undetermined, % of reads unclassified
+    min_reads        // number: --min_barcode_reads, fewest reads for a barcode to be a sample
 
     main:
     ch_versions = channel.empty()
@@ -221,19 +236,31 @@ workflow NANOPORE_QC {
         .map { meta, bam -> tuple( meta + [ id: safeId( "${meta.sample}_${meta.flowcell}".toString() ), barcode: null ], bam ) }
 
     ch_all = ch_demuxed.mix( ch_plain )
-    ch_bam = ch_all.filter { meta, _bam -> include_failed || meta.barcode != 'unclassified' }
+
+    // Each list wrapped in a one-element tuple: combine would otherwise spread
+    // a list's elements into the tuple.
+    ch_counts = ch_all.toList().map { s -> [ s ] }
+        .combine( DORADO_DEMUX.out.summary.toList().map { s -> [ s ] } )
+        .map { samples, summaries -> barcodeCounts( samples, summaries ) }
+
+    // A barcode becomes a sample only with --min_barcode_reads reads; an
+    // unbarcoded flow cell's sample always does, and so does every barcode
+    // when there are no counts to judge by (no barcoding_summary.txt).
+    ch_bam = ch_all
+        .combine( ch_counts )
+        .filter { meta, _bam, counts ->
+            meta.barcode == 'unclassified' ? include_failed
+                : !meta.barcode || !counts.reads || ( counts.reads[ meta.id ] ?: 0L ) >= min_reads
+        }
+        .map { meta, bam, _counts -> tuple( meta, bam ) }
 
     SAMTOOLS_FASTQ( ch_bam )
     NANOPLOT( ch_bam )
 
-    // Each list wrapped in a one-element tuple: combine would otherwise spread
-    // a list's elements into the tuple.
-    ch_demux = ch_all.toList().map { s -> [ s ] }
-        .combine( DORADO_DEMUX.out.summary.toList().map { s -> [ s ] } )
-        .flatMap { samples, summaries ->
-            def demux = demuxReads( samples, summaries )
-            demux ? [ tuple( samples[0][0], demux ) ] : []
-        }
+    ch_demux = ch_counts.flatMap { counts ->
+        def demux = demuxAboveCutoff( counts, min_reads as long )
+        demux ? [ tuple( counts.meta, demux ) ] : []
+    }
     ch_read_share = ch_demux
         .map { _meta, demux -> readShareTable( demux, 'Unclassified' ) }
         .collectFile( name: 'demux_read_share_mqc.tsv' )
