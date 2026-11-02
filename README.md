@@ -65,7 +65,7 @@ with `--platform illumina|aviti|nanopore|pacbio`.
 | Illumina NextSeq | `RunInfo.xml` | already demultiplexed on-instrument, left in place | FastQC + InterOp run metrics (see below) + BCL Convert demultiplexing reports |
 | Element AVITI | `RunParameters.json` | `bases2fastq` writes FASTQ to `<outdir>/reads` | FastQC + RunStats/Metrics |
 | ONT PromethION P24 | `final_summary_*.txt`, `*.pod5` | `dorado` basecalls on **GPU** to uBAM, then FASTQ | NanoPlot |
-| PacBio Revio | `*.consensusreadset.xml`, `*.hifi_reads*.bam` | HiFi uBAM already final, left in place | NanoPlot + samtools flagstat |
+| PacBio Revio | `<well>/pb_formats/*.consensusreadset.xml`, `<well>/hifi_reads/*.hifi_reads*.bam` | HiFi uBAM already final, left in place | NanoPlot + per-SMRT-Cell run metrics (P0/P1/P2, HiFi yield, QV) + lima barcode counts |
 
 POD5 are expected to be already split per barcode: each directory containing
 `*.pod5` is treated as one sample, named after that directory. There is no
@@ -108,9 +108,9 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 | `--pod5_dir` | — | Nanopore: POD5 live outside the run folder |
 | `--bam_dir` | — | PacBio: HiFi BAM live outside the run folder |
 | `--include_undetermined` | `false` | QC the Undetermined/Unassigned reads too |
-| `--include_failed` | `false` | include `pod5_fail` / unassigned PacBio BAM |
-| `--allow_incomplete` | `false` | Illumina: report even without `RTAComplete.txt`/`CopyComplete.txt` |
-| `--max_undetermined` | `15` | Illumina and AVITI: flag the run as high in the Demultiplexing table, plus a log warning, above this % of Undetermined (Illumina) or Unassigned (AVITI) reads |
+| `--include_failed` | `false` | include `pod5_fail` (Nanopore), or PacBio `fail_reads` and `unassigned` BAM |
+| `--allow_incomplete` | `false` | Report even on an unfinished run: Illumina without `RTAComplete.txt`/`CopyComplete.txt`, PacBio with a SMRT Cell lacking `metadata/*.transferdone` |
+| `--max_undetermined` | `15` | Illumina, AVITI and barcoded PacBio: flag the run as high in the Demultiplexing table, plus a log warning, above this % of Undetermined (Illumina) or Unassigned (AVITI, PacBio Not Barcoded) reads |
 | `--basecall.model` | baked-in `sup@v5.0.0` | dorado model path inside the container |
 | `--basecall.modified_bases` | `null` | e.g. `5mCG_5hmCG` to emit MM/ML tags |
 | `--multiqc_config` | — | extra MultiQC config, applied on top of `assets/multiqc_config.yml` (report order, and hides bases2fastq plots FastQC already shows) |

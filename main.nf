@@ -11,7 +11,7 @@
 include { ILLUMINA_QC  } from './subworkflows/local/illumina_qc.nf'
 include { AVITI_QC     } from './subworkflows/local/aviti_qc.nf'
 include { NANOPORE_QC  } from './subworkflows/local/nanopore_qc.nf'
-include { PACBIO_QC    } from './subworkflows/local/pacbio_qc.nf'
+include { PACBIO_QC; revioUnfinishedCells } from './subworkflows/local/pacbio_qc.nf'
 include { BATCH_REPORT } from './subworkflows/local/batch_report.nf'
 
 // Entries under a run directory matching a glob. `**/` requires at least one
@@ -59,8 +59,10 @@ def flag( value ) {
 // RTAComplete.txt + CopyComplete.txt gate in
 // EIT-GBI/Automate-Seq-Run-Metrics-Collection: InterOp metrics read from a
 // partial run are misleading rather than merely incomplete.
-def requireRunComplete( run_dir, String run_id, List<String> markers, boolean allow_incomplete ) {
-    def missing = markers.findAll { m -> !file("${run_dir}/${m}").exists() }
+//
+// `missing` names what is absent: marker files (Illumina) or unfinished SMRT
+// Cells (PacBio).
+def requireRunComplete( String run_id, List<String> missing, boolean allow_incomplete ) {
     if ( !missing ) {
         return
     }
@@ -103,7 +105,8 @@ workflow {
     ch_versions = channel.empty()
 
     if ( platform == 'illumina' ) {
-        requireRunComplete( run_dir, run_id, [ 'RTAComplete.txt', 'CopyComplete.txt' ], flag( params.allow_incomplete ) )
+        def missing = [ 'RTAComplete.txt', 'CopyComplete.txt' ].findAll { m -> !file("${run_dir}/${m}").exists() }
+        requireRunComplete( run_id, missing, flag( params.allow_incomplete ) )
         ILLUMINA_QC( ch_run, fastq_dir, flag( params.include_undetermined ), max_undetermined )
         ch_reads    = ILLUMINA_QC.out.reads
         ch_qc       = ILLUMINA_QC.out.qc
@@ -124,7 +127,9 @@ workflow {
         ch_versions = NANOPORE_QC.out.versions
     }
     else if ( platform == 'pacbio' ) {
-        PACBIO_QC( ch_run, bam_dir, flag( params.include_failed ) )
+        def unfinished = revioUnfinishedCells( bam_dir ?: run_dir ).collect { cell -> "${cell}/metadata/*.transferdone".toString() }
+        requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
+        PACBIO_QC( ch_run, bam_dir, flag( params.include_failed ), max_undetermined )
         ch_reads    = PACBIO_QC.out.reads
         ch_qc       = PACBIO_QC.out.qc
         ch_versions = PACBIO_QC.out.versions
