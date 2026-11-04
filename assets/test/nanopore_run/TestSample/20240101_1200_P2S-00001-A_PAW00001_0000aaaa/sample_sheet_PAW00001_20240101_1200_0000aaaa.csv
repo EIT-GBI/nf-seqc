@@ -1,0 +1,3 @@
+protocol_run_id,position_id,flow_cell_id,sample_id,experiment_id,flow_cell_product_code,kit,barcode,alias
+abcdef12-0000,P2S-00001-A,PAW00001,TestSample,20240101_test,FLO-PRO114M,SQK-NBD114-24,barcode01,sample A
+abcdef12-0000,P2S-00001-A,PAW00001,TestSample,20240101_test,FLO-PRO114M,SQK-NBD114-24,barcode02,sample_B
