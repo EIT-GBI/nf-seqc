@@ -41,7 +41,7 @@ nextflow run . -resume
 nextflow lint main.nf subworkflows/local/ modules/local/ nextflow.config conf/
 ```
 
-Requires Nextflow `>=25.04.0` (manifest-enforced); developed against 25.10.2.
+Requires Nextflow `>=25.04.0` (manifest-enforced); developed against 25.10.2; the cluster's shared module is 26.04.6 (Nanopore and PacBio ran on it on 2026-11-05; Illumina and AVITI not yet).
 
 Style rules the language server enforces, all of which this repo already follows — keep new code consistent:
 
@@ -106,7 +106,7 @@ These were all found empirically and all fail **silently**:
 - `nf-mod-dorado` has **no git tag or release** yet. Its v1 is [EIT-GBI/nf-mod-dorado#1](https://github.com/EIT-GBI/nf-mod-dorado/pull/1), opened from the `paulinefx` fork because the user's account is read-only there; Cristian maintains it. The submodule points at that PR's commit, so it cannot be pinned in `modules.versions`, and the image stays on `sha-9f93e96` (the last build of `main`: same dorado 0.8.3 and sup v5.0.0) because the PR's `conf/module.config` pins a `v0.0.0` that does not exist until the release. Once released: move the submodule to the tag, `includeConfig 'modules/dorado/conf/module.config'`, drop the sha pin, and add `nf-mod-dorado=<version>` to `modules.versions`.
 - `INTEROP_RUN_METRICS` has been run on real InterOp data only for NovaSeq and MiSeq folders (nf-mod-interop's tests). The **NextSeq 2000-only fields** (`Flowcell`, `Cycles`, `TotalReadsPF`, `RunStart`, `LoadingConc`) have never been read from a real NextSeq run.
 - MultiQC parses FastQC, bases2fastq (`RunStats.json`), BCL Convert (`Analysis/<n>/Data/Reports/`) and NanoStat output; the InterOp table and plot, and the PacBio and Nanopore Run Metrics tables, arrive as custom content (`*_mqc.*`). **The bases2fastq module only exists from MultiQC 1.29** — on 1.25.1 the AVITI report silently had no bases2fastq section — so never pin MultiQC below that. It has **no module for PacBio CCS reports**, so `pacbio_qc.nf` reads `summary.json`, `ccs_report.json` and `loading.report.json` (inside `reports.zip`) itself and writes the PacBio Run Metrics table.
-- The `cluster` profile targets the GBI sandpit SLURM clusters (checked on sandpit-tokyo, 2026-10-09: `cpu` and `gpu` partitions, GPU nodes `gpu:h100:8`). It switches Apptainer on itself and uses the shared cache `/mnt/lustre/containers/.staging/nf/cache/`. On tokyo, Apptainer exists only on the compute nodes, so the head job must be `sbatch`ed, with Java put on `PATH` by hand (SDKMAN is only loaded by interactive shells).
+- The `cluster` profile targets the GBI sandpit SLURM clusters (checked on sandpit-tokyo, 2026-10-09: `cpu` and `gpu` partitions, GPU nodes `gpu:h100:8`). It switches Apptainer on itself and uses the shared cache `/mnt/lustre/containers/.staging/nf/cache/`. On tokyo, Apptainer exists only on the compute nodes, so the head job must be `sbatch`ed, from a `#!/bin/bash -l` script that runs `module load nextflow` (Java comes with the module).
 
 ## Release conventions
 

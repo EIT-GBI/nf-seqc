@@ -29,18 +29,20 @@ by itself; don't add `singularity` to it. Run folders are under
 `/mnt/instrument-data/<instrument>/` (read-only).
 
 On **sandpit-tokyo**, Apptainer exists only on the compute nodes, so the
-Nextflow head job must itself run as a SLURM job. A batch job does not load
-your interactive shell, so put Java and Nextflow on `PATH` explicitly (here
-from SDKMAN and `~/.local/bin`):
+Nextflow head job must itself run as a SLURM job. Nextflow (with its Java)
+comes from the shared module, `module load nextflow`; a batch script needs a
+login shell (`#!/bin/bash -l`) for `module` to exist:
 
 ```bash
-sbatch -p cpu -c 2 --mem 8G -t 24:00:00 -J nf-seqc -o nf-seqc-%j.out --wrap="
-  export JAVA_HOME=\$HOME/.sdkman/candidates/java/current
-  export PATH=\$JAVA_HOME/bin:\$HOME/.local/bin:\$PATH
-  cd ~/nf-seqc && nextflow run . -profile cluster \
+#!/bin/bash -l
+#SBATCH -p cpu -c 2 --mem 8G -t 24:00:00 -J nf-seqc -o nf-seqc-%j.out
+set -euo pipefail
+module load nextflow
+cd ~/nf-seqc
+nextflow run . -profile cluster \
     --input /mnt/instrument-data/element_aviti_1/<run> \
-    --outdir /mnt/lustre/users/\$USER/nf-seqc/<run> \
-    -w /mnt/lustre/users/\$USER/nextflow-work"
+    --outdir /mnt/lustre/users/$USER/nf-seqc/<run> \
+    -w /mnt/lustre/users/$USER/nextflow-work
 ```
 
 Keep `-w` on Lustre, not the NFS home: bases2fastq writes the full FASTQ set
