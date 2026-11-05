@@ -13,7 +13,12 @@ process MULTIQC {
     // One or more configs, applied in order; staged under numbered directories
     // so two files with the same name cannot collide.
     path multiqc_configs, stageAs: 'config?/*'
-    path software_versions
+    // MultiQC reads tool versions only from files matching
+    // .+_mqc_versions.(yaml|yml) (its software_versions search pattern), so
+    // stage the pipeline's software_versions.yml under such a name. Without it
+    // the Software Versions section lists only what modules parse from their
+    // own outputs (FastQC, bases2fastq), and nothing on Nanopore or PacBio.
+    path software_versions, stageAs: 'nf_seqc_mqc_versions.yml'
 
     output:
     path "${run_id}_multiqc_report.html", emit: report
