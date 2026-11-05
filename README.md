@@ -63,6 +63,22 @@ dropped out of the Alluxio cache that is about 2 h of bases2fastq. Resume a
 specific run by its session ID from `nextflow log`
 (`-resume <session-id>`), or launch each run from its own directory.
 
+### Real-data test runs
+
+`-stub` exercises only the wiring. The `test_real_*` profiles run the tools on
+real, miniaturised runs kept on sandpit-tokyo, so they work only there, next to
+`cluster`:
+
+```bash
+nextflow run . -profile cluster,test_real_illumina   # NextSeq 2000 subset
+nextflow run . -profile cluster,test_real_aviti      # AVITI, bases2fastq on 2 tiles
+nextflow run . -profile cluster,test_real_nanopore   # P24 subset, needs a GPU node
+nextflow run . -profile cluster,test_real_pacbio     # Revio, one SMRT Cell
+```
+
+Submit them with `sbatch` as above. `conf/test_real.config` lists what each
+fixture holds.
+
 ## Supported platforms
 
 The platform is detected from the marker files each instrument writes; override
@@ -72,7 +88,7 @@ with `--platform illumina|aviti|nanopore|pacbio`.
 | --- | --- | --- | --- |
 | Illumina NextSeq | `RunInfo.xml` | already demultiplexed on-instrument, left in place | FastQC + InterOp run metrics (see below) + BCL Convert demultiplexing reports |
 | Element AVITI | `RunParameters.json` | `bases2fastq` writes FASTQ to `<outdir>/reads` | FastQC + RunStats/Metrics |
-| ONT PromethION P24 | `final_summary_*.txt`, `*.pod5` | `dorado` basecalls on **GPU** to uBAM, demultiplexes, then FASTQ | NanoPlot + barcode counts |
+| ONT PromethION P24 | `final_summary_*.txt`, `*.pod5` | `dorado` basecalls on **GPU** to uBAM, demultiplexes, then FASTQ | NanoPlot + per-flow-cell run metrics from MinKNOW's `report_*.json` (pore scans, occupancy, live yield and N50) + barcode counts |
 | PacBio Revio | `<well>/pb_formats/*.consensusreadset.xml`, `<well>/hifi_reads/*.hifi_reads*.bam` | HiFi uBAM already final, left in place | NanoPlot + per-SMRT-Cell run metrics (P0/P1/P2, HiFi yield, QV) + lima barcode counts |
 
 MinKNOW does not split POD5 cleanly by barcode: `pod5_pass/mixed/` holds part

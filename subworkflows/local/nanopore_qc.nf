@@ -182,6 +182,176 @@ def demuxAboveCutoff( Map counts, long min_reads ) {
     return kept ? demuxSummary( kept, counts.unclassified + ( low.values().sum() ?: 0L ), [] ) : null
 }
 
+// A JSON number MinKNOW wrote as a string ("328774"), or null.
+def asLong( value ) {
+    return value != null && value.toString().isNumber() ? value.toString() as long : null
+}
+
+// Hours between two MinKNOW timestamps (RFC 3339, nanoseconds), or null.
+def hoursBetween( String start, String end ) {
+    if ( !start || !end ) {
+        return null
+    }
+    def seconds = java.time.Duration.between( java.time.Instant.parse( start ), java.time.Instant.parse( end ) ).seconds
+    return seconds / 3600.0
+}
+
+// MinKNOW's STOPPED_PROTOCOL_ENDED as "protocol ended".
+def stopReason( String reason ) {
+    return reason ? ( reason - ~/^STOPPED_/ ).toLowerCase().replace('_', ' ') : ''
+}
+
+// One flow cell acquisition's run metrics, measured live by MinKNOW, from its
+// report_*.json. The report holds calibration acquisitions first; the metrics
+// come from the last SEQUENCING one. Returns null when there is none (a run
+// stopped during the flow cell check). Every field is n/a-able on its own.
+def ontReportMetrics( report ) {
+    def d   = new groovy.json.JsonSlurper().parse( report.toFile() )
+    def acq = ( d.acquisitions ?: [] ).findAll { a -> a.acquisition_run_info?.config_summary?.purpose == 'SEQUENCING' }
+    if ( !acq ) {
+        return null
+    }
+    def a        = acq[-1]
+    def info     = a.acquisition_run_info ?: [:]
+    def yields   = info.yield_summary ?: [:]
+    def run      = d.protocol_run_info ?: [:]
+    def flowcell = run.flow_cell?.flow_cell_id ?: run.user_info?.user_specified_flow_cell_id ?: report.parent.name
+    // N50 of the bases MinKNOW basecalled live, else of its estimate from the
+    // raw signal. The pipeline's own (sup) N50 per sample is in NanoStat.
+    def lengths  = ( a.read_length_histogram ?: [] ).collectEntries { h -> [ ( h.plot?.read_length_type ?: h.read_length_type ?: 'raw' ): h.plot?.histogram_data?.getAt(0)?.n50 ] }
+    // Pore scans run every 1.5 h; the first is at the start of sequencing.
+    def scans    = ( d.user_messages ?: [] ).findAll { m -> m.identifier == 'mux_scan_result' && m.extra_data }
+    def occ      = ( a.duty_time?.getAt(0)?.pore_occupancy ?: [] ).findAll { v -> v != null }
+    def passed   = asLong( yields.basecalled_pass_bases )
+    def estimate = asLong( yields.estimated_selected_bases )
+    return [
+        flowcell:    flowcell,
+        protocol:    ( run.run_id ?: '' ).take(8),
+        sample:      run.user_info?.sample_id ?: '',
+        position:    run.device?.device_id ?: '',
+        flowcell_type: run.flow_cell?.product_code ?: '',
+        kit:         run.user_info?.kit_info?.sequencing_kit ?: '',
+        hours:       hoursBetween( info.data_read_start_time, info.data_read_end_time ) ?: '',
+        stop:        stopReason( info.stop_reason ),
+        pores_start: scans ? ( asLong( scans[0].extra_data.total_pores ) ?: '' ) : '',
+        pores_ready: scans ? ( asLong( scans[0].extra_data.num_pores ) ?: '' ) : '',
+        pores_end:   scans ? ( asLong( scans[-1].extra_data.total_pores ) ?: '' ) : '',
+        occupancy:   occ ? 100.0 * occ.sum() / occ.size() : '',
+        reads:       asLong( yields.read_count ) ?: '',
+        pass_bases:  passed != null ? passed / 1e9 : '',
+        est_bases:   estimate != null ? estimate / 1e9 : '',
+        n50:         lengths.BasecalledBases ?: lengths.EstimatedBases ?: '',
+        model:       a.basecaller_config?.model_names?.simplex_model ?: '',
+        minknow:     run.software_versions?.minknow?.full ?: '',
+    ]
+}
+
+// One row per flow cell acquisition, as MultiQC custom content: the run-level
+// slot the InterOp table fills for Illumina. A flow cell restarted into a
+// second acquisition gets a row per acquisition, suffixed with the protocol
+// run id. No flags yet: what counts as low occupancy or pore count waits for
+// the lab, as for PacBio P1.
+def ontMetricsTable( root ) {
+    def reports = ( files("${root}/**/report_*.json") + files("${root}/report_*.json") )
+        .findAll { f -> f.exists() }
+        .unique()
+        .sort()
+    def rows = reports.collect { r -> ontReportMetrics( r ) }.findAll { m -> m }
+    if ( !rows ) {
+        return null
+    }
+    def counts = rows.countBy { m -> m.flowcell }
+    def header = [
+        "# id: 'nanopore_run_metrics'",
+        "# section_name: 'Nanopore Run Metrics'",
+        "# description: 'One row per flow cell, from MinKNOW''s report_*.json: what MinKNOW measured live during sequencing. Pores are from the pore scans MinKNOW runs every 1.5 h (first and last scan); occupancy is the share of available pores sequencing, averaged over the run. Yield and N50 are MinKNOW''s own live basecalls; the pipeline''s re-basecalled reads per sample are under NanoStat.'",
+        "# plot_type: 'table'",
+        "# pconfig:",
+        "#     id: 'nanopore_run_metrics_table'",
+        "#     namespace: 'Nanopore'",
+        "#     col1_header: 'Flow cell'",
+        "# headers:",
+        "#     sample:",
+        "#         title: 'Sample'",
+        "#         description: 'MinKNOW sample id'",
+        "#         scale: false",
+        "#     position:",
+        "#         title: 'Position'",
+        "#         scale: false",
+        "#     flowcell_type:",
+        "#         title: 'Flow cell type'",
+        "#         scale: false",
+        "#         hidden: true",
+        "#     kit:",
+        "#         title: 'Kit'",
+        "#         scale: false",
+        "#     hours:",
+        "#         title: 'Run time'",
+        "#         suffix: ' h'",
+        "#         format: '{:,.1f}'",
+        "#         scale: false",
+        "#     stop:",
+        "#         title: 'Stopped'",
+        "#         description: 'Why MinKNOW stopped acquiring'",
+        "#         scale: false",
+        "#     pores_start:",
+        "#         title: 'Pores, start'",
+        "#         description: 'Pores found by the first pore scan'",
+        "#         format: '{:,.0f}'",
+        "#     pores_ready:",
+        "#         title: 'Ready, start'",
+        "#         description: 'Pores available for immediate sequencing at the first pore scan'",
+        "#         format: '{:,.0f}'",
+        "#         hidden: true",
+        "#     pores_end:",
+        "#         title: 'Pores, end'",
+        "#         description: 'Pores found by the last pore scan'",
+        "#         format: '{:,.0f}'",
+        "#     occupancy:",
+        "#         title: 'Pore occupancy'",
+        "#         description: 'Mean share of available pores that were sequencing'",
+        "#         suffix: '%'",
+        "#         min: 0",
+        "#         max: 100",
+        "#         format: '{:,.1f}'",
+        "#     reads:",
+        "#         title: 'Reads'",
+        "#         description: 'Reads MinKNOW generated'",
+        "#         format: '{:,.0f}'",
+        "#     pass_bases:",
+        "#         title: 'Pass yield'",
+        "#         description: 'Bases in reads passing MinKNOW''s live basecalling'",
+        "#         suffix: ' Gb'",
+        "#         format: '{:,.2f}'",
+        "#     est_bases:",
+        "#         title: 'Estimated yield'",
+        "#         description: 'Bases estimated from the raw signal'",
+        "#         suffix: ' Gb'",
+        "#         format: '{:,.2f}'",
+        "#         hidden: true",
+        "#     n50:",
+        "#         title: 'Read N50'",
+        "#         description: 'Read length N50 of MinKNOW''s live basecalls'",
+        "#         suffix: ' bp'",
+        "#         format: '{:,.0f}'",
+        "#     model:",
+        "#         title: 'Live model'",
+        "#         description: 'Model MinKNOW basecalled with live; the pipeline re-basecalls with --basecall.model'",
+        "#         scale: false",
+        "#         hidden: true",
+        "#     minknow:",
+        "#         title: 'MinKNOW'",
+        "#         scale: false",
+        "#         hidden: true",
+        "Flow cell\tsample\tposition\tflowcell_type\tkit\thours\tstop\tpores_start\tpores_ready\tpores_end\toccupancy\treads\tpass_bases\test_bases\tn50\tmodel\tminknow",
+    ]
+    def lines = rows.collect { m ->
+        def id = counts[ m.flowcell ] > 1 ? "${m.flowcell}_${m.protocol}" : m.flowcell
+        ( [ id ] + m.subMap( [ 'sample', 'position', 'flowcell_type', 'kit', 'hours', 'stop', 'pores_start', 'pores_ready', 'pores_end', 'occupancy', 'reads', 'pass_bases', 'est_bases', 'n50', 'model', 'minknow' ] ).values() ).join('\t')
+    }
+    return ( header + lines ).join('\n') + '\n'
+}
+
 workflow NANOPORE_QC {
 
     take:
@@ -268,8 +438,18 @@ workflow NANOPORE_QC {
         .map { meta, demux -> demuxSummaryTable( meta.run, demux, max_undetermined, 'dorado demux barcoding_summary.txt', 'Unclassified', 'NANOPORE_QC' ) }
         .collectFile( name: 'demux_summary_mqc.tsv' )
 
+    // From the run folder, not --pod5_dir: MinKNOW writes its reports next to
+    // final_summary, whichever disk the POD5 were moved to.
+    ch_run_metrics = ch_run
+        .flatMap { _meta, run_dir ->
+            def table = ontMetricsTable( run_dir )
+            table ? [ table ] : []
+        }
+        .collectFile( name: 'nanopore_run_metrics_mqc.tsv' )
+
     ch_qc = channel.empty()
         .mix( NANOPLOT.out.stats.map { _meta, stats -> stats } )
+        .mix( ch_run_metrics )
         .mix( ch_read_share )
         .mix( ch_demux_summary )
 
