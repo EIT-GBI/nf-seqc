@@ -7,6 +7,8 @@
 #             %Occupied vs %PF plot, FastQC, Demultiplexing, BCL Convert.
 #   AVITI:    General Statistics, Unassigned barcodes, bases2fastq,
 #             FastQC, Demultiplexing.
+#   Nanopore / PacBio: General Statistics, Unassigned barcodes, Run Metrics,
+#             NanoStat, Demultiplexing.
 # FastQC opens with Sequence Quality Histograms, Per Base Sequence Content and
 # Adapter Content. The barcodes and Demultiplexing tables and the % Reads /
 # Loading columns come from subworkflows/local/demux_report.nf, for both
@@ -54,7 +56,8 @@ sp:
 # Modules sort descending by `order` (defaults are small multiples of 10), so
 # these explicit values place them ahead of everything else, in this order.
 # Run Metrics + %Occupied plot + BCL Convert (Illumina) and bases2fastq (AVITI)
-# never appear together; bases2fastq takes the Run Metrics slot.
+# never appear together; bases2fastq takes the Run Metrics slot, as do the
+# PacBio and Nanopore Run Metrics tables.
 #
 # MultiQC cannot move a section out of its module, which is why the barcodes
 # table is our own (demux_unknown_barcodes) rather than BCL Convert's
@@ -78,6 +81,8 @@ report_section_order:
   bases2fastq:
     order: 990
   pacbio_run_metrics:
+    order: 990
+  nanopore_run_metrics:
     order: 990
   nanostat:
     order: 900

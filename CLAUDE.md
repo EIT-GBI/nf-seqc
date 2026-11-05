@@ -10,7 +10,7 @@ nf-seqc takes the **complete output directory of one sequencing run** and report
 | --- | --- | --- | --- |
 | Illumina NextSeq | `RunInfo.xml`, `RunParameters.xml`, `InterOp/`, `PrimaryAnalysisMetrics/` | demultiplexed on-instrument, left in place | FastQC + InterOp (%PF, %occupied, Q30, phasing, PhiX error — none of which reach the FASTQ) + on-instrument BCL Convert `Reports/` |
 | Element AVITI | `RunParameters.json` | none in the run folder — `bases2fastq` is part of this pipeline's job | FastQC + `RunStats.json`/`Metrics.csv` |
-| ONT PromethION P24 | `<sample>/<acquisition>/pod5_pass/{barcodeNN,mixed,unclassified}/`, `final_summary_*.txt` | `dorado basecaller --kit-name` (GPU) per POD5 folder → `dorado demux` per flow cell → uBAM → `samtools fastq` | NanoPlot + barcode counts |
+| ONT PromethION P24 | `<sample>/<acquisition>/pod5_pass/{barcodeNN,mixed,unclassified}/`, `final_summary_*.txt` | `dorado basecaller --kit-name` (GPU) per POD5 folder → `dorado demux` per flow cell → uBAM → `samtools fastq` | NanoPlot + MinKNOW `report_*.json` run metrics + barcode counts |
 | PacBio Revio | one dir per SMRT Cell (`1_A01/`): HiFi uBAM, `pb_formats/*.consensusreadset.xml` (sample names), `statistics/` (CCS, loading, lima) | already final, delivered as uBAM | NanoPlot + per-cell run metrics + lima barcode counts |
 
 Only two of the four platforms hand you FASTQ, so read normalisation is per-platform and happens *inside* the pipeline. **POD5 are *not* cleanly split per barcode.** MinKNOW's `pod5_pass/mixed/` holds a large share of each barcode's reads (34% of barcode01's on `20260515_Plasmids_A_B`), so a folder is not a sample. Every POD5 folder is basecalled with `--kit-name` (kit from `final_summary`'s `protocol=`, or `--barcode_kit`), which tags reads with their barcode, and `DORADO_DEMUX --no-classify` splits each flow cell's reads on that tag. Samples are named by the sample sheet `alias`, else the barcode; `unclassified` is the Unassigned share.
@@ -26,6 +26,9 @@ nextflow run . -profile test_aviti -stub
 nextflow run . -profile test_nanopore -stub
 nextflow run . -profile test_pacbio -stub
 
+# Real miniaturised runs, sandpit-tokyo only (sbatch the head job)
+nextflow run . -profile cluster,test_real_nanopore   # or _illumina, _aviti, _pacbio
+
 # Real run
 nextflow run . -profile cluster --input <run_dir> --outdir <dir>   # head job via sbatch; see README
 
@@ -38,7 +41,7 @@ nextflow run . -resume
 nextflow lint main.nf subworkflows/local/ modules/local/ nextflow.config conf/
 ```
 
-Requires Nextflow `>=25.04.0` (manifest-enforced); developed against 25.10.2.
+Requires Nextflow `>=25.04.0` (manifest-enforced); developed against 25.10.2; the cluster's shared module is 26.04.6 (Nanopore and PacBio ran on it on 2026-11-05; Illumina and AVITI not yet).
 
 Style rules the language server enforces, all of which this repo already follows — keep new code consistent:
 
@@ -46,7 +49,7 @@ Style rules the language server enforces, all of which this repo already follows
 - **Declare explicit closure parameters**; implicit `it` is deprecated. Prefix deliberately unused ones with `_` (`.map { _meta, zip -> zip }`).
 - **Don't assign closures to local variables inside a function** — the language server does not resolve them and reports `X is not defined` as a hard error. Use a named top-level function instead (see `matchingFiles` in `main.nf`).
 
-There are no real test fixtures. `assets/test/` holds marker files and zero-byte reads: enough to exercise platform detection, sample discovery, channel wiring and publishing under `-stub`, but the tools themselves are never run. Verifying anything about tool behaviour needs real miniaturised runs.
+`assets/test/` holds marker files and zero-byte reads: enough to exercise platform detection, sample discovery, channel wiring and publishing under `-stub`, but the tools themselves are never run. Real miniaturised runs live on sandpit-tokyo only: `-profile cluster,test_real_<platform>` (fixtures listed in `conf/test_real.config`). They are not in CI.
 
 ## Architecture
 
@@ -102,8 +105,8 @@ These were all found empirically and all fail **silently**:
 
 - `nf-mod-dorado` has **no git tag or release** yet. Its v1 is [EIT-GBI/nf-mod-dorado#1](https://github.com/EIT-GBI/nf-mod-dorado/pull/1), opened from the `paulinefx` fork because the user's account is read-only there; Cristian maintains it. The submodule points at that PR's commit, so it cannot be pinned in `modules.versions`, and the image stays on `sha-9f93e96` (the last build of `main`: same dorado 0.8.3 and sup v5.0.0) because the PR's `conf/module.config` pins a `v0.0.0` that does not exist until the release. Once released: move the submodule to the tag, `includeConfig 'modules/dorado/conf/module.config'`, drop the sha pin, and add `nf-mod-dorado=<version>` to `modules.versions`.
 - `INTEROP_RUN_METRICS` has been run on real InterOp data only for NovaSeq and MiSeq folders (nf-mod-interop's tests). The **NextSeq 2000-only fields** (`Flowcell`, `Cycles`, `TotalReadsPF`, `RunStart`, `LoadingConc`) have never been read from a real NextSeq run.
-- MultiQC parses FastQC, bases2fastq (`RunStats.json`), BCL Convert (`Analysis/<n>/Data/Reports/`) and NanoStat output; the InterOp table and plot, and the PacBio Run Metrics table, arrive as custom content (`*_mqc.*`). **The bases2fastq module only exists from MultiQC 1.29** — on 1.25.1 the AVITI report silently had no bases2fastq section — so never pin MultiQC below that. It has **no module for PacBio CCS reports**, so `pacbio_qc.nf` reads `summary.json`, `ccs_report.json` and `loading.report.json` (inside `reports.zip`) itself and writes the PacBio Run Metrics table.
-- The `cluster` profile targets the GBI sandpit SLURM clusters (checked on sandpit-tokyo, 2026-10-09: `cpu` and `gpu` partitions, GPU nodes `gpu:h100:8`). It switches Apptainer on itself and uses the shared cache `/mnt/lustre/containers/.staging/nf/cache/`. On tokyo, Apptainer exists only on the compute nodes, so the head job must be `sbatch`ed, with Java put on `PATH` by hand (SDKMAN is only loaded by interactive shells).
+- MultiQC parses FastQC, bases2fastq (`RunStats.json`), BCL Convert (`Analysis/<n>/Data/Reports/`) and NanoStat output; the InterOp table and plot, and the PacBio and Nanopore Run Metrics tables, arrive as custom content (`*_mqc.*`). **The bases2fastq module only exists from MultiQC 1.29** — on 1.25.1 the AVITI report silently had no bases2fastq section — so never pin MultiQC below that. It has **no module for PacBio CCS reports**, so `pacbio_qc.nf` reads `summary.json`, `ccs_report.json` and `loading.report.json` (inside `reports.zip`) itself and writes the PacBio Run Metrics table.
+- The `cluster` profile targets the GBI sandpit SLURM clusters (checked on sandpit-tokyo, 2026-10-09: `cpu` and `gpu` partitions, GPU nodes `gpu:h100:8`). It switches Apptainer on itself and uses the shared cache `/mnt/lustre/containers/.staging/nf/cache/`. On tokyo, Apptainer exists only on the compute nodes, so the head job must be `sbatch`ed, from a `#!/bin/bash -l` script that runs `module load nextflow` (Java comes with the module).
 
 ## Release conventions
 
