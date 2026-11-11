@@ -454,6 +454,8 @@ workflow NANOPORE_QC {
         .mix( ch_demux_summary )
 
     ch_versions = ch_versions
+        .mix( DORADO_BASECALLER.out.versions_dorado )
+        .mix( DORADO_DEMUX.out.versions_dorado )
         .mix( NANOPLOT.out.versions_nanoplot )
 
     emit:
