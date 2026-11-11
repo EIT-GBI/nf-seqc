@@ -47,16 +47,14 @@ jobs:
           nextflow inspect main.nf -profile test 2>/dev/null \
             | python3 .github/scripts/check_containers.py
 
-      # TODO: enable once nf-mod-dorado drops publishDir. Fails today on
-      # modules/dorado/basecaller/main.nf, which hardcodes it, so basecalled
-      # output is published twice. Comment lines are ignored, since
-      # modules/local/interop mentions publishDir in a comment.
-      # - name: No publishDir
-      #   run: |
-      #     if grep -rnE --include='*.nf' '^[[:space:]]*publishDir' .; then
-      #       echo "::error::publishDir found; publishing belongs in the output block in main.nf"
-      #       exit 1
-      #     fi
+      # A module that hardcodes publishDir publishes its output twice: once
+      # itself, once from the output {} block. Comment lines are ignored.
+      - name: No publishDir
+        run: |
+          if grep -rnE --include='*.nf' '^[[:space:]]*publishDir' .; then
+            echo "::error::publishDir found; publishing belongs in the output block in main.nf"
+            exit 1
+          fi
 
   stub:
     name: Stub run (${{ matrix.profile }})
