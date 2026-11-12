@@ -90,8 +90,8 @@ with `--platform illumina|aviti|nanopore|pacbio`.
 | --- | --- | --- | --- |
 | Illumina NextSeq | `RunInfo.xml` | already demultiplexed on-instrument, left in place | FastQC + InterOp run metrics (see below) + BCL Convert demultiplexing reports |
 | Element AVITI | `RunParameters.json` | `bases2fastq` writes FASTQ to `<outdir>/reads` | FastQC + RunStats/Metrics |
-| ONT PromethION P24 | `final_summary_*.txt`, `*.pod5` | `dorado` basecalls on **GPU** to uBAM, demultiplexes, then FASTQ | NanoPlot + per-flow-cell run metrics from MinKNOW's `report_*.json` (pore scans, occupancy, live yield and N50) + barcode counts |
-| PacBio Revio | `<well>/pb_formats/*.consensusreadset.xml`, `<well>/hifi_reads/*.hifi_reads*.bam` | HiFi uBAM already final, left in place | NanoPlot + per-SMRT-Cell run metrics (P0/P1/P2, HiFi yield, QV) + lima barcode counts |
+| ONT PromethION P24 | `final_summary_*.txt`, `*.pod5` | `dorado` basecalls on **GPU** to uBAM, demultiplexes, then FASTQ | per-sample reads, yield, N50 and median Q from MinKNOW's `sequencing_summary_*.txt` (its live basecalls, no BAM is read) + per-flow-cell run metrics from MinKNOW's `report_*.json` (pore scans, occupancy, live yield and N50) + barcode counts from the pipeline's demux |
+| PacBio Revio | `<well>/pb_formats/*.consensusreadset.xml`, `<well>/hifi_reads/*.hifi_reads*.bam` | HiFi uBAM already final, left in place | read from the instrument's own reports, no BAM is read: per-sample HiFi reads, yield, length, QV and barcode quality (`barcodes.report.json`) + per-SMRT-Cell run metrics (P0/P1/P2, HiFi yield, N50, QV) + lima barcode counts |
 
 MinKNOW does not split POD5 cleanly by barcode: `pod5_pass/mixed/` holds part
 of each barcode's reads. So every POD5 folder is basecalled with the run's
@@ -139,7 +139,7 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 | `--min_barcode_reads` | `100` | Nanopore: fewest reads for a barcode to be reported as a sample; reads of smaller barcodes count as unclassified |
 | `--bam_dir` | — | PacBio: HiFi BAM live outside the run folder |
 | `--include_undetermined` | `false` | QC the Undetermined/Unassigned reads too |
-| `--include_failed` | `false` | include `pod5_fail` and the unclassified reads (Nanopore), or PacBio `fail_reads` and `unassigned` BAM |
+| `--include_failed` | `false` | Nanopore: include `pod5_fail` and the unclassified reads. PacBio failed reads are always counted per barcode (hidden General Statistics column) |
 | `--allow_incomplete` | `false` | Report even on an unfinished run: Illumina without `RTAComplete.txt`/`CopyComplete.txt`, PacBio with a SMRT Cell lacking `metadata/*.transferdone` |
 | `--max_undetermined` | `15` | Illumina, AVITI and barcoded PacBio: flag the run as high in the Demultiplexing table, plus a log warning, above this % of Undetermined (Illumina) or Unassigned (AVITI, PacBio Not Barcoded) reads |
 | `--basecall.model` | baked-in `sup@v5.0.0` | dorado model path inside the container |
@@ -151,7 +151,7 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 - `main.nf` — platform detection, dispatch, and the `output {}` publish targets
 - `subworkflows/local/` — one subworkflow per platform, plus `batch_report.nf`
 - `modules/<tool>/` — git submodules from `nf-mod-*` repos
-- `modules/local/` — tools with no `nf-mod-*` repo yet (bases2fastq, nanoplot, multiqc)
+- `modules/local/` — tools with no `nf-mod-*` repo yet (bases2fastq, multiqc, ont_summary_stats)
 - `conf/` — `base.config` (resources), `test.config`. Container images are set in
   `nextflow.config`: each released module's `conf/module.config` is included, and
   local-module images are pinned in its `process {}` block. Nothing uses `:latest`

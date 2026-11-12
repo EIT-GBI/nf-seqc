@@ -131,7 +131,7 @@ workflow {
     else if ( platform == 'pacbio' ) {
         def unfinished = revioUnfinishedCells( bam_dir ?: run_dir ).collect { cell -> "${cell}/metadata/*.transferdone".toString() }
         requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
-        PACBIO_QC( ch_run, bam_dir, flag( params.include_failed ), max_undetermined )
+        PACBIO_QC( ch_run, bam_dir, max_undetermined )
         ch_reads    = PACBIO_QC.out.reads
         ch_qc       = PACBIO_QC.out.qc
         ch_versions = PACBIO_QC.out.versions
