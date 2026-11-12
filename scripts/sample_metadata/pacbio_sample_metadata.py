@@ -14,13 +14,14 @@ which list the same samples. Those are skipped when found through a folder or
 glob (a file passed by its own path is always read), and rows repeated across
 files (e.g. a downloaded `<movie>.metadata(1).xml`) are written once.
 
-Only the first DNABarcode of each BioSample is kept, and of a symmetric pair
-(bc2053--bc2053) only the left barcode.
+Only the first DNABarcode of each BioSample is kept. BarcodeName is its left
+barcode (bc2053--bc2053 -> bc2053), as in the original script; BarcodePair is
+the full name, which tells asymmetric pairs (bc2001--bc2002) apart.
 
 Output columns:
 Name, ReadSet, RunName, MovieName, WellName, ReactionWell, BarcodeName,
 application, library_type, loading_concentration, insert_size, is_ccs,
-is_isoseq, instrument_type, instrument_id, instrument_name
+is_isoseq, instrument_type, instrument_id, instrument_name, BarcodePair
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ OUTPUT_COLUMNS = [
     "instrument_type",
     "instrument_id",
     "instrument_name",
+    "BarcodePair",
 ]
 
 # WellSample child element -> output column
@@ -97,8 +99,12 @@ def clean_barcode(barcode_name: str) -> str:
 
 
 def readset_and_reactionwell(xml_file: Path) -> tuple[str, str]:
-    """<run>/<cell>/metadata/<movie>.metadata.xml -> (<run>, <cell>); else blank."""
-    path = xml_file.resolve()
+    """
+    <run>/<cell>/metadata/<movie>.metadata.xml -> (<run>, <cell>); else blank.
+    absolute(), not resolve(): a run reached through a symlink keeps the name
+    it was given, not the link target's.
+    """
+    path = xml_file.absolute()
     if path.parent.name == "metadata":
         return path.parent.parent.parent.name, path.parent.parent.name
     return "", ""
@@ -139,10 +145,12 @@ def extract_samples(xml_file: Path) -> list[dict[str, str]]:
                 if local_name(biosample.tag) != "BioSample":
                     continue
                 barcode = first_descendant(biosample, "DNABarcode")
+                pair = barcode.get("Name", "") if barcode is not None else ""
                 rows.append(
                     {
                         "Name": biosample.get("Name", ""),
-                        "BarcodeName": clean_barcode(barcode.get("Name", "")) if barcode is not None else "",
+                        "BarcodeName": clean_barcode(pair),
+                        "BarcodePair": pair,
                         **shared,
                     }
                 )

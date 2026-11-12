@@ -9,9 +9,11 @@ Where the sample sheet is looked for, per run folder, first match wins:
   1. Analysis/<n>/Data/Reports/SampleSheet.csv   (the sheet BCL Convert used;
                                                    highest <n> = latest re-analysis)
   2. Analysis/<n>/Data/SampleSheet.csv
-  3. any *.csv in the run root with a [BCLConvert_Data] or [Data] section
+  3. the sheet in the run root named by RunParameters.xml's SampleSheetFilePath
      (the instrument copies the user's sheet there under its own name,
      e.g. SEQN2K000112_samplesheet_2x50.csv)
+  4. else the first *.csv in the run root with a [BCLConvert_Data] or [Data]
+     section, with a warning when there are several
 
 Run-level columns come from RunInfo.xml and RunParameters.xml in the run folder.
 Both v2 ([BCLConvert_Data], with optional [Cloud_Data]) and v1 ([Data])
@@ -112,7 +114,17 @@ def find_sample_sheet(run_dir: Path) -> Path | None:
         sheets = sorted(run_dir.glob(pattern), key=analysis_number)
         if sheets:
             return sheets[-1]
+    # The run's own record of which sheet it used. It may be a Windows or a
+    # Linux path, so split on both separators.
+    used = xml_text(parse_xml(run_dir / "RunParameters.xml"), "SampleSheetFilePath")
+    if used:
+        named = run_dir / re.split(r"[\\/]", used)[-1]
+        if named.is_file() and has_data_section(named):
+            return named
+
     root_sheets = [p for p in sorted(run_dir.glob("*.csv")) if has_data_section(p)]
+    if len(root_sheets) > 1:
+        print(f"WARNING: several sample sheets in {run_dir}, using {root_sheets[0].name}", file=sys.stderr)
     return root_sheets[0] if root_sheets else None
 
 
@@ -257,7 +269,9 @@ def main():
     if not rows:
         raise SystemExit("No sample records were extracted from the input files.")
 
-    rows.sort(key=lambda r: (r["RunId"], r["Lane"]))  # stable: keeps sheet order within a run
+    # Stable: keeps sheet order within a lane. SampleSheet keeps sheets with
+    # no RunInfo.xml (blank RunId) from being interleaved.
+    rows.sort(key=lambda r: (r["RunId"], r["SampleSheet"], r["Lane"]))
     with open(args.output, "w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=OUTPUT_COLUMNS, lineterminator="\n")
         writer.writeheader()

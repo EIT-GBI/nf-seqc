@@ -29,20 +29,25 @@ Platform notes:
   with the same samples. These are skipped when found through a folder or glob
   pattern, so each sample is listed once. A preview file passed by its full
   path is still read. Identical rows from several files (e.g. a downloaded
-  `<movie>.metadata(1).xml`) are written once. Columns are the same as
-  Melissa's original script.
+  `<movie>.metadata(1).xml`) are written once. The columns are Melissa's
+  original ones plus `BarcodePair` at the end: `BarcodeName` keeps only the left
+  barcode, so `BarcodePair` is what tells asymmetric pairs (`bc2001--bc2002`)
+  apart.
 - **Illumina.** v2 (`[BCLConvert_Data]`, plus `[Cloud_Data]` when present) and v1
   (`[Data]`) sheets are both read. With several `Analysis/<n>` re-runs, the
-  highest `<n>` wins.
+  highest `<n>` wins. Before the on-instrument analysis has run, the sheet is the
+  one in the run folder that `RunParameters.xml`'s `SampleSheetFilePath` names.
 - **AVITI.** A sample with several index pairs (PhiX has four) gives one row per
   pair, as in the manifest. `FilterMask` is shown because some runs set their
   own (e.g. R1-only), which makes runs hard to compare.
 - **Nanopore.** Barcodes come from the sample sheet's `barcode`/`alias` columns.
-  When the sheet has none, they come from the `pod5_pass/barcodeNN` folders
-  MinKNOW created, which shows the barcodes MinKNOW saw during the run, not the
-  final demux (`BarcodeSource` says which). Each restarted acquisition on a flow
-  cell gets its own rows. An acquisition with no barcode folders gets a single
-  `none` row.
+  When the sheet has none, they come from the `barcodeNN` folders MinKNOW created
+  under `pod5_pass/` (or `pod5/` when pass/fail splitting is off). Those show the
+  barcodes MinKNOW saw during the run, not the final demux (`BarcodeSource` says
+  which). Each restarted acquisition on a flow cell gets its own rows.
+  Acquisitions with no reads and no `final_summary` (a start that was aborted
+  straight away, like 1359 and 1405 on `20260515_Plasmids_A_B`) are skipped. An
+  acquisition with reads but no barcode folders gets a single `none` row.
 
 Tested 2026-11-12 on sandpit-tokyo: NextSeq `261006_VH02427_108_AAJJW55M5` and
 `261112_VH02427_122_222H77WNX`, AVITI `SEQEBA000015`, P24

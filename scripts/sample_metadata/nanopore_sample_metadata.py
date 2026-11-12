@@ -7,14 +7,16 @@ Companion to pacbio_sample_metadata.py. Standard library only.
 
 MinKNOW writes one folder per acquisition:
     <experiment>/<sample>/<date>_<time>_<position>_<flowcell>_<id>/
-holding sample_sheet_*.csv, final_summary_*.txt and pod5_pass/. Any folder
-holding one of those counts as an acquisition, so pass the experiment folder,
-an acquisition folder, or a glob of either.
+holding sample_sheet_*.csv, final_summary_*.txt and the reads, in pod5_pass/
+(or pod5/ when pass/fail splitting is off). Any folder holding one of those
+counts as an acquisition, so pass the experiment folder, an acquisition
+folder, or a glob of either. Acquisitions with no reads and no final_summary
+(a start that was aborted or restarted straight away) are skipped.
 
 One row per barcode:
   - from the sample sheet, when it has a `barcode` column (BarcodeSource =
     sample_sheet; Name = alias, else barcode);
-  - otherwise from the pod5_pass/barcodeNN folders MinKNOW split into
+  - otherwise from the barcodeNN folders MinKNOW split the reads into
     (BarcodeSource = pod5_folder). These are only the barcodes MinKNOW saw
     live; many reads sit in pod5_pass/mixed, so this is not a read count;
   - otherwise one row for the acquisition (BarcodeSource = none).
@@ -57,10 +59,21 @@ OUTPUT_COLUMNS = [
 ]
 
 MARKERS = ("sample_sheet_*.csv", "final_summary_*.txt")
+# Where MinKNOW writes the reads: pod5_pass/ normally, pod5/ with pass/fail
+# splitting turned off.
+READ_DIRS = ("pod5_pass", "pod5")
+
+
+def read_dir(acq: Path) -> Path | None:
+    return next((acq / d for d in READ_DIRS if (acq / d).is_dir()), None)
 
 
 def is_acquisition(path: Path) -> bool:
-    return any(next(path.glob(m), None) for m in MARKERS) or (path / "pod5_pass").is_dir()
+    return any(next(path.glob(m), None) for m in MARKERS) or read_dir(path) is not None
+
+
+def has_reads(acq: Path) -> bool:
+    return read_dir(acq) is not None or next(acq.glob("final_summary_*.txt"), None) is not None
 
 
 def find_acquisitions(root: Path) -> list[Path]:
@@ -131,7 +144,8 @@ def extract_samples(acq: Path) -> list[dict[str, str]]:
                          "BarcodeSource": "sample_sheet"})
         return rows
 
-    folders = sorted(p.name for p in (acq / "pod5_pass").glob("barcode*") if p.is_dir())
+    reads = read_dir(acq)
+    folders = sorted(p.name for p in reads.glob("barcode*") if p.is_dir()) if reads else []
     for barcode in folders:
         rows.append({**base, "Name": barcode, "Barcode": barcode, "Alias": "", "BarcodeSource": "pod5_folder"})
     if not rows:
@@ -174,8 +188,12 @@ def main():
     if not acquisitions:
         raise SystemExit("No MinKNOW acquisition folders found.")
 
-    rows, failures = [], 0
+    rows, failures, empty = [], 0, 0
     for acq in acquisitions:
+        if not has_reads(acq):
+            empty += 1
+            print(f"{acq}: no reads and no final_summary, skipped")
+            continue
         try:
             samples = extract_samples(acq)
             rows.extend(samples)
@@ -196,6 +214,8 @@ def main():
     print(f"\nAcquisitions read: {len(acquisitions)}")
     print(f"Samples written: {len(rows)}")
     print(f"Output: {args.output}")
+    if empty:
+        print(f"Acquisitions without reads: {empty}")
     if failures:
         print(f"Skipped folders: {failures}")
 
