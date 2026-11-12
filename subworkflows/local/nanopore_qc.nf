@@ -18,11 +18,16 @@
 // its barcode, and DORADO_DEMUX then splits all of a flow cell's reads by that
 // tag. Unbarcoded flow cells skip the demux: each folder's BAM is the sample.
 //
+// Per-sample read statistics come from MinKNOW's sequencing_summary_*.txt (one
+// row per read, written next to final_summary), not from the BAM: they
+// describe MinKNOW's live basecalls and barcoding. Sample rows and % Reads
+// still come from the pipeline's own demux.
+//
 
 include { DORADO_BASECALLER } from '../../modules/dorado/basecaller/main.nf'
 include { DORADO_DEMUX      } from '../../modules/dorado/demux/main.nf'
 include { SAMTOOLS_FASTQ    } from '../../modules/samtools/fastq/main.nf'
-include { NANOPLOT          } from '../../modules/local/nanoplot/main.nf'
+include { ONT_SUMMARY_STATS } from '../../modules/local/ont_summary_stats/main.nf'
 include { demuxSummary; readShareTable; demuxSummaryTable } from './demux_report.nf'
 
 // key=value lines of a MinKNOW final_summary_*.txt.
@@ -111,7 +116,7 @@ def demuxBarcode( bam ) {
     return m.find() ? m.group(1) : bam.name - ~/\.bam$/
 }
 
-// Sample ids end up in file and directory names (NanoPlot --prefix/--outdir).
+// Sample ids end up in file names (the per-sample BAM and FASTQ).
 def safeId( String name ) {
     return name.replaceAll(/[^A-Za-z0-9._-]+/, '_')
 }
@@ -182,6 +187,85 @@ def demuxAboveCutoff( Map counts, long min_reads ) {
     return kept ? demuxSummary( kept, counts.unclassified + ( low.values().sum() ?: 0L ), [] ) : null
 }
 
+// Every sequencing_summary_*.txt under the run folder, grouped by flow cell
+// (a restarted acquisition writes a second one), as [ flowcell, [ files ] ].
+// The flow cell id is final_summary's, as ontPod5Folders() names it.
+def ontSequencingSummaries( root ) {
+    def summaries = ( files("${root}/**/sequencing_summary_*.txt") + files("${root}/sequencing_summary_*.txt") )
+        .findAll { f -> f.exists() }
+        .unique()
+    return summaries.groupBy { f ->
+        def final_summary = files("${f.parent}/final_summary_*.txt").find { s -> s.exists() }
+        ( final_summary ? keyValues( final_summary ).flow_cell_id : null ) ?: f.parent.name
+    }.collect { flowcell, fs -> [ flowcell, fs.sort() ] }
+}
+
+// MultiQC General Statistics columns, one row per sample, from each flow
+// cell's ONT_SUMMARY_STATS table: what NanoPlot used to compute by reading
+// every BAM. A barcoded sample takes its barcode's row, an unbarcoded flow
+// cell's sample the flow cell's `all` row. null when no sample has a row.
+def ontSampleTable( List samples, List stats ) {
+    def by_flowcell = stats.collectEntries { meta, tsv ->
+        [ ( meta.flowcell ): tsv.splitCsv( header: true, sep: '\t' ).collectEntries { r -> [ ( r.barcode ): r ] } ]
+    }
+    def rows = samples.collect { meta, _bam ->
+        def r = by_flowcell[ meta.flowcell ]?.get( meta.barcode ?: 'all' )
+        if ( !r ) {
+            return null
+        }
+        def reads = r.pass_reads as long
+        def all   = reads + ( r.fail_reads as long )
+        [ meta.id, reads, ( r.pass_bases as long ) / 1e6, r.mean_length, r.n50, r.median_q, all ? 100.0 * reads / all : '' ].join('\t')
+    }.findAll { r -> r != null }
+    if ( !rows ) {
+        return null
+    }
+    def header = [
+        "# id: 'nanopore_sample_metrics'",
+        "# plot_type: 'generalstats'",
+        "# headers:",
+        "#     reads:",
+        "#         title: 'Reads'",
+        "#         namespace: 'MinKNOW'",
+        "#         description: 'Pass reads in MinKNOW''s sequencing_summary (its live basecalls and barcoding; the pipeline''s own demux gives % Reads)'",
+        "#         format: '{:,.0f}'",
+        "#     yield:",
+        "#         title: 'Yield'",
+        "#         namespace: 'MinKNOW'",
+        "#         description: 'Pass bases'",
+        "#         suffix: ' Mb'",
+        "#         format: '{:,.1f}'",
+        "#     mean_length:",
+        "#         title: 'Mean length'",
+        "#         namespace: 'MinKNOW'",
+        "#         description: 'Mean pass read length'",
+        "#         suffix: ' bp'",
+        "#         format: '{:,.0f}'",
+        "#     n50:",
+        "#         title: 'Read N50'",
+        "#         namespace: 'MinKNOW'",
+        "#         description: 'Pass read length N50'",
+        "#         suffix: ' bp'",
+        "#         format: '{:,.0f}'",
+        "#     median_q:",
+        "#         title: 'Median Q'",
+        "#         namespace: 'MinKNOW'",
+        "#         description: 'Median of the pass reads'' mean Q-score'",
+        "#         format: '{:,.1f}'",
+        "#     pct_pass:",
+        "#         title: '% Pass'",
+        "#         namespace: 'MinKNOW'",
+        "#         description: 'Share of the barcode''s reads that passed MinKNOW''s Q-score filter'",
+        "#         suffix: '%'",
+        "#         min: 0",
+        "#         max: 100",
+        "#         format: '{:,.1f}'",
+        "#         hidden: true",
+        "Sample\treads\tyield\tmean_length\tn50\tmedian_q\tpct_pass",
+    ]
+    return ( header + rows ).join('\n') + '\n'
+}
+
 // A JSON number MinKNOW wrote as a string ("328774"), or null.
 def asLong( value ) {
     return value != null && value.toString().isNumber() ? value.toString() as long : null
@@ -217,7 +301,7 @@ def ontReportMetrics( report ) {
     def run      = d.protocol_run_info ?: [:]
     def flowcell = run.flow_cell?.flow_cell_id ?: run.user_info?.user_specified_flow_cell_id ?: report.parent.name
     // N50 of the bases MinKNOW basecalled live, else of its estimate from the
-    // raw signal. The pipeline's own (sup) N50 per sample is in NanoStat.
+    // raw signal. Per-sample N50 is in General Statistics, from sequencing_summary.
     def lengths  = ( a.read_length_histogram ?: [] ).collectEntries { h -> [ ( h.plot?.read_length_type ?: h.read_length_type ?: 'raw' ): h.plot?.histogram_data?.getAt(0)?.n50 ] }
     // Pore scans run every 1.5 h; the first is at the start of sequencing.
     def scans    = ( d.user_messages ?: [] ).findAll { m -> m.identifier == 'mux_scan_result' && m.extra_data }
@@ -264,7 +348,7 @@ def ontMetricsTable( root ) {
     def header = [
         "# id: 'nanopore_run_metrics'",
         "# section_name: 'Nanopore Run Metrics'",
-        "# description: 'One row per flow cell, from MinKNOW''s report_*.json: what MinKNOW measured live during sequencing. Pores are from the pore scans MinKNOW runs every 1.5 h (first and last scan); occupancy is the share of available pores sequencing, averaged over the run. Yield and N50 are MinKNOW''s own live basecalls; the pipeline''s re-basecalled reads per sample are under NanoStat.'",
+        "# description: 'One row per flow cell, from MinKNOW''s report_*.json: what MinKNOW measured live during sequencing. Pores are from the pore scans MinKNOW runs every 1.5 h (first and last scan); occupancy is the share of available pores sequencing, averaged over the run. Yield and N50 are MinKNOW''s own live basecalls; per-sample read statistics (General Statistics) are from MinKNOW''s sequencing_summary.'",
         "# plot_type: 'table'",
         "# pconfig:",
         "#     id: 'nanopore_run_metrics_table'",
@@ -425,7 +509,23 @@ workflow NANOPORE_QC {
         .map { meta, bam, _counts -> tuple( meta, bam ) }
 
     SAMTOOLS_FASTQ( ch_bam )
-    NANOPLOT( ch_bam )
+
+    // From the run folder, not --pod5_dir: MinKNOW writes its reports next to
+    // final_summary, whichever disk the POD5 were moved to.
+    ch_summaries = ch_run.flatMap { meta, run_dir ->
+        ontSequencingSummaries( run_dir ).collect { flowcell, fs ->
+            tuple( meta.subMap( [ 'run', 'platform' ] ) + [ id: flowcell, flowcell: flowcell ], fs )
+        }
+    }
+    ONT_SUMMARY_STATS( ch_summaries )
+
+    ch_sample_metrics = ch_bam.toList().map { s -> [ s ] }
+        .combine( ONT_SUMMARY_STATS.out.stats.toList().map { s -> [ s ] } )
+        .flatMap { samples, stats ->
+            def table = ontSampleTable( samples, stats )
+            table ? [ table ] : []
+        }
+        .collectFile( name: 'nanopore_sample_metrics_mqc.tsv' )
 
     ch_demux = ch_counts.flatMap { counts ->
         def demux = demuxAboveCutoff( counts, min_reads as long )
@@ -438,8 +538,6 @@ workflow NANOPORE_QC {
         .map { meta, demux -> demuxSummaryTable( meta.run, demux, max_undetermined, 'dorado demux barcoding_summary.txt', 'Unclassified', 'NANOPORE_QC' ) }
         .collectFile( name: 'demux_summary_mqc.tsv' )
 
-    // From the run folder, not --pod5_dir: MinKNOW writes its reports next to
-    // final_summary, whichever disk the POD5 were moved to.
     ch_run_metrics = ch_run
         .flatMap { _meta, run_dir ->
             def table = ontMetricsTable( run_dir )
@@ -448,7 +546,7 @@ workflow NANOPORE_QC {
         .collectFile( name: 'nanopore_run_metrics_mqc.tsv' )
 
     ch_qc = channel.empty()
-        .mix( NANOPLOT.out.stats.map { _meta, stats -> stats } )
+        .mix( ch_sample_metrics )
         .mix( ch_run_metrics )
         .mix( ch_read_share )
         .mix( ch_demux_summary )
@@ -456,7 +554,7 @@ workflow NANOPORE_QC {
     ch_versions = ch_versions
         .mix( DORADO_BASECALLER.out.versions_dorado )
         .mix( DORADO_DEMUX.out.versions_dorado )
-        .mix( NANOPLOT.out.versions_nanoplot )
+        .mix( ONT_SUMMARY_STATS.out.versions_python )
 
     emit:
     reads    = SAMTOOLS_FASTQ.out.reads // FASTQ for scientists

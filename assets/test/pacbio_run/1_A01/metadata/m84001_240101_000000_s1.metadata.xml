@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Test fixture: the parts of a Revio metadata.xml that nf-seqc reads. -->
+<PacBioDataModel xmlns="http://pacificbiosciences.com/PacBioDataModel.xsd"><ComponentVersions>
+<VersionInfo Name="ics" Version="13.3.0.253824" />
+<VersionInfo Name="smrtlink" Version="25.3.0.273777" />
+<VersionInfo Name="lima" />
+</ComponentVersions></PacBioDataModel>

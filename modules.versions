@@ -14,5 +14,5 @@ nf-mod-interop=1.3.0
 nf-mod-dorado=1.0.0
 
 # Also pending: bases2fastq and multiqc live in modules/local/ because
-# no nf-mod-* repo exists for them yet. nanoplot is local until nf-mod-nanoplot
-# accepts unaligned input and has a release.
+# no nf-mod-* repo exists for them yet. ont_summary_stats is local and
+# nanopore-specific.

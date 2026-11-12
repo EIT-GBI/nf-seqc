@@ -8,7 +8,8 @@
 #   AVITI:    General Statistics, Unassigned barcodes, bases2fastq,
 #             FastQC, Demultiplexing.
 #   Nanopore / PacBio: General Statistics, Unassigned barcodes, Run Metrics,
-#             NanoStat, Demultiplexing.
+#             Demultiplexing. Per-sample read statistics are General
+#             Statistics columns, from the instruments' own reports.
 # FastQC opens with Sequence Quality Histograms, Per Base Sequence Content and
 # Adapter Content. The barcodes and Demultiplexing tables and the % Reads /
 # Loading columns come from subworkflows/local/demux_report.nf, for both
@@ -84,8 +85,6 @@ report_section_order:
     order: 990
   nanopore_run_metrics:
     order: 990
-  nanostat:
-    order: 900
   fastqc:
     order: 900
   demux_summary:
