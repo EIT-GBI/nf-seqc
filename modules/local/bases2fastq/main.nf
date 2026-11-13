@@ -56,7 +56,7 @@ process BASES2FASTQ {
     stub:
     """
     touch SAMPLE1_R1.fastq.gz SAMPLE1_R2.fastq.gz PhiX_R1.fastq.gz PhiX_R2.fastq.gz Unassigned_R1.fastq.gz Unassigned_R2.fastq.gz
-    touch SAMPLE1_stats.json
+    touch SAMPLE1_stats.json PhiX_stats.json Unassigned_stats.json
     touch RunStats.json Metrics.csv RunManifest.csv RunManifest.json
     touch ${meta.id}_QC.html
     touch IndexAssignment.csv UnassignedSequences.csv Bases2Fastq.log RunManifestErrors.json

@@ -30,6 +30,7 @@ nextflow run . -profile test_pacbio -stub
 nextflow run . -profile cluster,test_real_nanopore   # or _illumina, _aviti, _pacbio
 
 nextflow run . -profile test_publish -stub    # --instrument/--run → mirrored outdir
+nextflow run tests/copy_reads.nf --src <dir> # COPY_READS for real (see the copy-reads CI job)
 
 # Real run
 nextflow run . -profile cluster --instrument <brand>_<model>_<machine_ID> --run <run>   # head job via sbatch; see README

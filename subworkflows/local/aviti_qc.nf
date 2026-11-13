@@ -16,6 +16,18 @@ def isElementReport( f ) {
     return f.name.endsWith('_QC.html')
 }
 
+// PhiX is the run's spike-in control, not a sample: no FASTQ delivered, no
+// FastQC, no sample row. Its numbers stay in bases2fastq's own reports.
+def isPhiX( f ) {
+    return f.name.startsWith('PhiX_')
+}
+
+// Reads bases2fastq could not assign to a sample: always delivered, QC'd only
+// with --include_undetermined.
+def isUnassigned( f ) {
+    return f.name.startsWith('Unassigned')
+}
+
 // A process output declared as path("*.x") is a single Path when one file
 // matches and a List when several do. `[] + path` does NOT wrap a single Path:
 // Path is Iterable over its directory components, so it yields every parent
@@ -59,21 +71,17 @@ workflow AVITI_QC {
     ch_pairs = BASES2FASTQ.out.fastq.flatMap { meta, fastqs ->
         def files = asFileList( fastqs )
 
-        // Unassigned reads are always delivered; they are QC'd (FastQC, a sample
-        // row) only with --include_undetermined.
-        // PhiX is the run's spike-in control, not a sample: no FASTQ delivered,
-        // no FastQC. Its numbers stay in bases2fastq's own reports.
-        files = files.findAll { f -> !f.name.startsWith('PhiX_') }
+        files = files.findAll { f -> !isPhiX( f ) }
 
         def r1s = files.findAll { f -> f.name ==~ /.*_R1(_001)?\.fastq\.gz$/ }
-        if ( !r1s.findAll { f -> !f.name.startsWith('Unassigned') } ) {
+        if ( !r1s.findAll { f -> !isUnassigned( f ) } ) {
             error "AVITI_QC: bases2fastq produced no R1 FASTQ. Check the run manifest in ${meta.id}."
         }
 
         r1s.sort().collect { r1 ->
             def r2  = files.find { f -> f.name == r1.name.replace('_R1', '_R2') }
             def sid = r1.name.replaceAll(/_R1(_001)?\.fastq\.gz$/, '')
-            tuple( meta + [ id: sid, single_end: r2 == null, undetermined: r1.name.startsWith('Unassigned') ], r1, r2 ?: [] )
+            tuple( meta + [ id: sid, single_end: r2 == null, undetermined: isUnassigned( r1 ) ], r1, r2 ?: [] )
         }
     }
 
@@ -101,7 +109,9 @@ workflow AVITI_QC {
     ch_qc = channel.empty()
         .mix( FASTQC_FASTQC.out.zip.map { _meta, zip -> zip } )
         .mix( BASES2FASTQ.out.stats.flatMap { _meta, stats -> asFileList( stats ).findAll { f -> !isElementReport( f ) } } )
-        .mix( BASES2FASTQ.out.sample_stats.flatMap { _meta, stats -> asFileList( stats ) } )
+        .mix( BASES2FASTQ.out.sample_stats.flatMap { _meta, stats ->
+            asFileList( stats ).findAll { f -> !isPhiX( f ) && ( include_undetermined || !isUnassigned( f ) ) }
+        } )
         .mix( ch_read_share )
         .mix( ch_demux_summary )
         .mix( ch_unknown_barcodes )

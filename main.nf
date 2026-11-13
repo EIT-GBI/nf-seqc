@@ -52,11 +52,13 @@ def resolveRun( String instrument, String run, String prep_root, String found ) 
 // The claim file is created atomically, so of two launches that both find the
 // directory empty, only one proceeds.
 //
-// A folder published before the option C layout (reads/, multiqc/, ...) is
-// refused outright, even with -resume or --overwrite: either would add the new
-// layout beside the old one and leave every read file there twice.
-def claimOutput( out, String session, boolean resuming, boolean overwrite ) {
-    def old_layout = [ 'reads', 'bam', 'multiqc', 'metrics', 'pipeline_info' ].findAll { d -> out.resolve( d ).isDirectory() }
+// A delivered run (--instrument/--run) published before the option C layout
+// (reads/, multiqc/, ...) is refused outright, even with -resume or
+// --overwrite: either would add the new layout beside the old one and leave
+// every read file there twice. Scratch output (--input, test profiles) is
+// not checked, so old local test folders can still be written over.
+def claimOutput( out, String session, boolean resuming, boolean overwrite, boolean delivered ) {
+    def old_layout = delivered ? [ 'reads', 'bam', 'multiqc', 'metrics', 'pipeline_info' ].findAll { d -> out.resolve( d ).isDirectory() } : []
     if ( old_layout ) {
         error "Output directory ${out} was published in the old layout (${old_layout.collect { d -> "${d}/" }.join(', ')}). Move or remove it before publishing this run again."
     }
@@ -176,7 +178,7 @@ workflow {
         }
     }
 
-    claimOutput( workflow.outputDir, workflow.sessionId.toString(), workflow.resume, flag( params.overwrite ) )
+    claimOutput( workflow.outputDir, workflow.sessionId.toString(), workflow.resume, flag( params.overwrite ), by_name )
 
     log.info "nf-seqc: run '${run_id}' on platform '${platform}'"
     log.info "nf-seqc: reading ${run_dir}"

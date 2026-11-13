@@ -77,9 +77,10 @@ def safeId( String name ) {
 
 // [ meta, bam ] per HiFi BAM, meta.id the BioSample name (barcoded cell), the
 // well sample name (unbarcoded cell) or the BAM name (no
-// consensusreadset.xml). Failed reads get a _fail suffix. A name used by more
-// than one cell (a library re-sequenced) is suffixed with the well, so General
-// Statistics keeps one row per cell.
+// consensusreadset.xml). Only HiFi BAMs come here (failed reads are counted
+// per barcode from lima, not delivered). A name used by more than one cell (a
+// library re-sequenced) is suffixed with the well, so General Statistics keeps
+// one row per cell.
 def revioSamples( meta, List bams ) {
     def names = [:]
     def rows = bams.collect { bam ->
@@ -96,9 +97,6 @@ def revioSamples( meta, List bams ) {
         def name = b.barcode
             ? ( n.barcodes[ b.barcode ] ?: b.barcode )
             : ( n.well_sample ?: b.movie )
-        if ( b.kind == 'fail_reads' ) {
-            name = "${name}_fail"
-        }
         def well = cell ? cell.name : b.movie
         [ meta: meta + [ id: safeId( name ), well: well, movie: b.movie, barcode: b.barcode ], bam: bam ]
     }

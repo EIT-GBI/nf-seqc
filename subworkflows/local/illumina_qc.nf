@@ -77,6 +77,12 @@ def demuxReads( stats ) {
     return demuxSummary( reads.findAll { id, _n -> id != 'Undetermined' }, reads['Undetermined'] ?: 0L, barcodes )
 }
 
+// Reads BCL Convert could not assign to a sample: always delivered, QC'd only
+// with --include_undetermined.
+def isUndetermined( f ) {
+    return f.name.startsWith('Undetermined')
+}
+
 workflow ILLUMINA_QC {
 
     take:
@@ -97,9 +103,7 @@ workflow ILLUMINA_QC {
             .findAll { f -> f.exists() }
             .unique()
 
-        // Undetermined reads are always delivered; they are QC'd (FastQC, a
-        // sample row) only with --include_undetermined.
-        if ( !r1s.findAll { f -> !f.name.startsWith('Undetermined') } ) {
+        if ( !r1s.findAll { f -> !isUndetermined( f ) } ) {
             error "ILLUMINA_QC: no *_R1_001.fastq.gz found under ${root}. Has the run been demultiplexed? Point --fastq_dir at the FASTQ directory if they live elsewhere."
         }
 
@@ -108,7 +112,7 @@ workflow ILLUMINA_QC {
             def sid = r1.name
                 .replaceAll(/_S\d+(_L\d{3})?_R1_001\.fastq\.gz$/, '')
                 .replaceAll(/_R1_001\.fastq\.gz$/, '')
-            tuple( meta + [ id: sid, single_end: !r2.exists(), undetermined: r1.name.startsWith('Undetermined') ], r1, r2.exists() ? r2 : [] )
+            tuple( meta + [ id: sid, single_end: !r2.exists(), undetermined: isUndetermined( r1 ) ], r1, r2.exists() ? r2 : [] )
         }
     }
 
