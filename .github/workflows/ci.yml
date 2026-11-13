@@ -62,9 +62,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # One per platform. The fixtures under assets/test/ are marker files
-        # and zero-byte reads: they exercise platform detection, sample
-        # discovery, channel wiring and publishing, not the tools themselves.
+        # One per platform, plus test_publish for the --instrument/--run route.
+        # The fixtures under assets/test/ are marker files and zero-byte reads:
+        # they exercise platform detection, sample discovery, channel wiring
+        # and publishing, not the tools themselves.
         profile: [test, test_aviti, test_nanopore, test_pacbio, test_publish]
     steps:
       - uses: actions/checkout@v7
@@ -76,7 +77,26 @@ jobs:
           version: '26.04.4'
 
       - name: Stub run
+        if: matrix.profile != 'test_publish'
         run: nextflow run . -profile ${{ matrix.profile }} -stub-run --outdir results_${{ matrix.profile }}
+
+      # No --outdir here: it would win over the path built from
+      # <publish_root>/<instrument>/<YYYY>/<run>, which is what this job tests.
+      - name: Stub run (mirrored publish path)
+        if: matrix.profile == 'test_publish'
+        run: |
+          set -euo pipefail
+          nextflow run . -profile test_publish -stub-run
+          out=results-test-publish/illumina_nextseq_VH00000/2026/illumina_run
+          for f in multiqc/illumina_run_multiqc_report.html pipeline_info/nf-seqc_session.txt \
+                   reads/TEST1_S1_L001_R1_001.fastq.gz reads/TEST1_S1_L001_R2_001.fastq.gz; do
+            test -f "$out/$f" || { echo "::error::missing $out/$f"; ls -R results-test-publish || true; exit 1; }
+          done
+          # A second launch into the published run must be refused.
+          if nextflow run . -profile test_publish -stub-run --overwrite false; then
+            echo "::error::second launch into $out was not refused"
+            exit 1
+          fi
 
       - name: Upload logs on failure
         if: failure()
