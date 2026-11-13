@@ -189,17 +189,33 @@ def demuxAboveCutoff( Map counts, long min_reads ) {
     return kept ? demuxSummary( kept, counts.unclassified + ( low.values().sum() ?: 0L ), [] ) : null
 }
 
+// key=value lines of an acquisition directory's final_summary, or [:].
+def acquisitionSummary( dir ) {
+    def final_summary = files("${dir}/final_summary_*.txt").find { s -> s.exists() }
+    return final_summary ? keyValues( final_summary ) : [:]
+}
+
 // Every sequencing_summary_*.txt under the run folder, grouped by flow cell
-// (a restarted acquisition writes a second one), as [ flowcell, [ files ] ].
-// The flow cell id is final_summary's, as ontPod5Folders() names it.
+// (a restarted acquisition writes a second one), with the flow cell's
+// report_*.json and what names its samples, as
+// [ flowcell, [ summaries ], [ reports ], [ aliases: , plain_name: ] ].
+// The flow cell id and sample are final_summary's, as ontPod5Folders() names
+// them; plain_name is an unbarcoded flow cell's sample, as NANOPORE_QC names it.
 def ontSequencingSummaries( root ) {
     def summaries = ( files("${root}/**/sequencing_summary_*.txt") + files("${root}/sequencing_summary_*.txt") )
         .findAll { f -> f.exists() }
         .unique()
-    return summaries.groupBy { f ->
-        def final_summary = files("${f.parent}/final_summary_*.txt").find { s -> s.exists() }
-        ( final_summary ? keyValues( final_summary ).flow_cell_id : null ) ?: f.parent.name
-    }.collect { flowcell, fs -> [ flowcell, fs.sort() ] }
+    return summaries.groupBy { f -> acquisitionSummary( f.parent ).flow_cell_id ?: f.parent.name }
+        .collect { flowcell, fs ->
+            def dirs    = fs.collect { f -> f.parent }.unique()
+            def reports = dirs.collectMany { d -> files("${d}/report_*.json").findAll { r -> r.exists() } }
+            def kv      = acquisitionSummary( fs[0].parent )
+            def names   = [
+                aliases:    dirs.collect { d -> sampleSheetAliases( d ) }.inject( [:] ) { a, b -> a + b },
+                plain_name: safeId( "${kv.sample_id ?: flowcell}_${flowcell}".toString() ),
+            ]
+            [ flowcell, fs.sort(), reports.sort(), names ]
+        }
 }
 
 // MultiQC General Statistics columns, one row per sample, from each flow
@@ -515,12 +531,15 @@ workflow NANOPORE_QC {
 
     // From the run folder, not --pod5_dir: MinKNOW writes its reports next to
     // final_summary, whichever disk the POD5 were moved to.
+    // multi_flowcell: sample names carry the flow cell id when the run has
+    // several flow cells, as ontSamples() suffixes names used on more than one.
     ch_summaries = ch_run.flatMap { meta, run_dir ->
-        ontSequencingSummaries( run_dir ).collect { flowcell, fs ->
-            tuple( meta.subMap( [ 'run', 'platform' ] ) + [ id: flowcell, flowcell: flowcell ], fs )
+        def flowcells = ontSequencingSummaries( run_dir )
+        flowcells.collect { flowcell, fs, reports, names ->
+            tuple( meta.subMap( [ 'run', 'platform' ] ) + names + [ id: flowcell, flowcell: flowcell, multi_flowcell: flowcells.size() > 1 ], fs, reports )
         }
     }
-    ONT_SUMMARY_STATS( ch_summaries )
+    ONT_SUMMARY_STATS( ch_summaries, min_reads )
 
     ch_sample_metrics = ch_bam.toList().map { s -> [ s ] }
         .combine( ONT_SUMMARY_STATS.out.stats.toList().map { s -> [ s ] } )
@@ -551,6 +570,7 @@ workflow NANOPORE_QC {
     ch_qc = channel.empty()
         .mix( ch_sample_metrics )
         .mix( ch_run_metrics )
+        .mix( ONT_SUMMARY_STATS.out.mqc )
         .mix( ch_read_share )
         .mix( ch_demux_summary )
 
