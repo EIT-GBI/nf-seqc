@@ -65,7 +65,7 @@ jobs:
         # One per platform. The fixtures under assets/test/ are marker files
         # and zero-byte reads: they exercise platform detection, sample
         # discovery, channel wiring and publishing, not the tools themselves.
-        profile: [test, test_aviti, test_nanopore, test_pacbio]
+        profile: [test, test_aviti, test_nanopore, test_pacbio, test_publish]
     steps:
       - uses: actions/checkout@v7
         with:

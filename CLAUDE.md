@@ -29,8 +29,10 @@ nextflow run . -profile test_pacbio -stub
 # Real miniaturised runs, sandpit-tokyo only (sbatch the head job)
 nextflow run . -profile cluster,test_real_nanopore   # or _illumina, _aviti, _pacbio
 
+nextflow run . -profile test_publish -stub    # --instrument/--run → mirrored outdir
+
 # Real run
-nextflow run . -profile cluster --input <run_dir> --outdir <dir>   # head job via sbatch; see README
+nextflow run . -profile cluster --instrument <brand>_<model>_<machine_ID> --run <run>   # head job via sbatch; see README
 
 # Config / syntax checks — no linter or test framework is configured
 nextflow config . -profile test
@@ -55,6 +57,8 @@ Style rules the language server enforces, all of which this repo already follows
 
 `main.nf` detects the platform from marker files, dispatches to one of four subworkflows in `subworkflows/local/`, and declares the publish targets. Each platform subworkflow emits the same three channels — `reads`, `qc` (flat files MultiQC can read), `versions` — which is what makes `BATCH_REPORT` uniform. `meta` carries `[id, run, platform]`, where `id` is the sample (barcode, SMRT Cell, or Illumina/AVITI sample name) and `run` is constant for the whole pipeline run.
 
+**Where runs come from and go.** Instruments write to `/mnt/instrument-prep-zone/sequencing/<brand>_<model>_<machine_ID>/<YYYY>/<run>` (`--prep_root`); results are published to the same relative path under `/mnt/instrument-data/sequencing` (`--publish_root`) for scientists. With `--instrument`/`--run`, `nextflow.config` globs the year directory itself (it has to: `outputDir` is fixed before the workflow starts) and leaves every match in `params.input`, comma-separated; `resolveRun()` in `main.nf` turns that into one directory or an error. The brand prefix must match the detected platform, and a destination that already has files is refused unless `-resume` or `--overwrite`. Publishing is `copy` (another filesystem from `work/`), and Illumina FASTQ and Revio BAM go through `COPY_READS` so they are task outputs. Scientific computing (Christiaan) owns these storage conventions; permissions/group ownership of the destination are still to be agreed with them.
+
 Platform detection order matters: AVITI is checked before Illumina because both write a file called `RunParameters`, differing only in extension.
 
 ### Illumina run metrics mirror an existing internal tool
@@ -69,7 +73,7 @@ Deliberate divergences, all documented in the script's module docstring:
 - **Three upstream bugs are fixed here** — if they are fixed upstream, drop the notes: `_parse_flowcell` used `> 100`, labelling a 100-cycle P2 cartridge "P2 50" and contradicting its own docstring; and the sample-sheet path and `OutputFolder` were split on `os.sep`, which leaves a Windows path from `RunParameters.xml` unsplit when running on Linux (whole path in `SampleSheet`, `<dir>\<run>` in `Run_nr`).
 - The MultiQC custom-content namespace is `Illumina InterOp`, not the pipeline name, since the module is reusable.
 
-**Composition via git submodules.** Per-tool processes live in their own `EIT-GBI/nf-mod-*` repos under `modules/<tool>/`, one subdirectory per subcommand (`modules/fastqc/fastqc/main.nf` → `FASTQC_FASTQC`, `modules/dorado/basecaller/main.nf` → `DORADO_BASECALLER`). Always check whether an `nf-mod-*` repo already exists in the org before writing a process. `modules/local/` holds tools not yet usable from a repo — `bases2fastq`, `multiqc` (no repo) and `ont_summary_stats` (nanopore-specific; ships its script as a module binary) — and each is marked for promotion. NanoPlot is no longer used: both long-read platforms take per-sample stats from the instrument's own reports. Whether a tool gets its own repo is decided case by case: anything reusable by another pipeline does.
+**Composition via git submodules.** Per-tool processes live in their own `EIT-GBI/nf-mod-*` repos under `modules/<tool>/`, one subdirectory per subcommand (`modules/fastqc/fastqc/main.nf` → `FASTQC_FASTQC`, `modules/dorado/basecaller/main.nf` → `DORADO_BASECALLER`). Always check whether an `nf-mod-*` repo already exists in the org before writing a process. `modules/local/` holds tools not yet usable from a repo — `bases2fastq`, `multiqc` (no repo), `ont_summary_stats` (nanopore-specific; ships its script as a module binary) and `copy_reads` (plain `cp`, no container) — and each is marked for promotion. NanoPlot is no longer used: both long-read platforms take per-sample stats from the instrument's own reports. Whether a tool gets its own repo is decided case by case: anything reusable by another pipeline does.
 
 **`modules.versions` is the source of truth for module versions, not the submodule pointers.** The flow is:
 
@@ -88,7 +92,7 @@ Never hand-edit a submodule pointer to change a version — edit `modules.versio
 
 These were all found empirically and all fail **silently**:
 
-- **Publishing only works for task outputs.** Files that came from the input run directory cannot be published by the `output {}` block. That is why Illumina FASTQ, Revio HiFi BAM and the PacBio CCS reports never appear under `--outdir` — they are instrument-produced and stay in the run folder. Adding a publish target for them does nothing rather than erroring.
+- **Publishing only works for task outputs.** Files that came from the input run directory cannot be published by the `output {}` block. That is why Illumina FASTQ and Revio HiFi BAM go through `COPY_READS` first, and why the PacBio CCS reports never appear under `--outdir`. Adding a publish target for them does nothing rather than erroring.
 - **Never `flatMap` a channel before publishing it.** A `flatMap`-derived channel loses the task provenance the output block needs and publishes nothing at all. `map` and raw tuple channels are fine.
 - **`outputDir = params.outdir` must come after the `profiles` block.** Profiles are merged as the config is parsed, so assigning it earlier captures the default and silently ignores any profile that overrides `params.outdir`. The template shipped it in the wrong place.
 - **Process output globs keep their relative subpaths when published.** A tool that writes nested output (bases2fastq → `Samples/<project>/<sample>/`) will leak that structure into the results tree, so flatten inside the process before emitting.

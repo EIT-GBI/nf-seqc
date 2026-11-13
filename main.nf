@@ -13,6 +13,48 @@ include { AVITI_QC     } from './subworkflows/local/aviti_qc.nf'
 include { NANOPORE_QC; nanoporeUnfinished } from './subworkflows/local/nanopore_qc.nf'
 include { PACBIO_QC; revioUnfinishedCells } from './subworkflows/local/pacbio_qc.nf'
 include { BATCH_REPORT } from './subworkflows/local/batch_report.nf'
+include { COPY_READS   } from './modules/local/copy_reads/main.nf'
+
+// Instrument directory names start with the brand: <brand>_<model>_<machine_ID>.
+// The platform each brand's run folder should be detected as; null for a brand
+// not listed here.
+def instrumentPlatform( String instrument ) {
+    def brands = [ illumina: 'illumina', element: 'aviti', oxford_nanopore: 'nanopore', pacbio: 'pacbio' ]
+    return brands.find { brand, _platform -> instrument.startsWith( "${brand}_" ) }?.value
+}
+
+// The run directory named by --instrument/--run. nextflow.config has already
+// looked under every <prep_root>/<instrument>/<YYYY>/ for it (it builds the
+// output path from the year) and left every match in params.input, separated
+// by commas; here that becomes exactly one directory or a clear error.
+def resolveRun( String instrument, String run, String prep_root, String found ) {
+    def machine_dir = file( "${prep_root}/${instrument}" )
+    if ( !machine_dir.isDirectory() ) {
+        def known = files( "${prep_root}/*", type: 'dir' ).collect { d -> d.name }.sort()
+        error "No instrument directory ${machine_dir}. Instruments under ${prep_root}: ${known ? known.join(', ') : 'none'}."
+    }
+    def matches = found ? found.tokenize(',') : []
+    if ( !matches ) {
+        error "Run '${run}' not found under ${machine_dir}/<YYYY>/. Check --run against the run folder name."
+    }
+    if ( matches.size() > 1 ) {
+        error "Run '${run}' found in more than one year under ${machine_dir}: ${matches.join(', ')}. Pass the one wanted with --input and --outdir."
+    }
+    return file( matches[0] )
+}
+
+// A run is published once. Refuse an output directory that already holds
+// files, unless this is a -resume of the run that wrote them or --overwrite
+// says so: a second, separate run would otherwise mix its results in.
+def requireEmptyOutput( out, boolean resuming, boolean overwrite ) {
+    if ( !out.exists() || !out.list() || resuming ) {
+        return
+    }
+    if ( !overwrite ) {
+        error "Output directory ${out} already has results. Pass -resume to continue the run that wrote them, or --overwrite to write over them."
+    }
+    log.warn "Writing over the results already in ${out} (--overwrite was set)."
+}
 
 // Entries under a run directory matching a glob. `**/` requires at least one
 // directory level, so root-level files need their own pattern alongside it.
@@ -75,15 +117,44 @@ def requireRunComplete( String run_id, List<String> missing, boolean allow_incom
 workflow {
 
     main:
-    if ( !params.input ) {
-        error "No input run directory given. Use --input <run_dir> (one pipeline run = one sequencing run)."
+    def by_name = params.instrument || params.run
+    if ( by_name && !( params.instrument && params.run ) ) {
+        error "--instrument and --run go together: --instrument <brand>_<model>_<machine_ID> --run <run folder>."
+    }
+    // nextflow.config fills params.input from --instrument/--run, but a
+    // --input on the command line overrides that, so a path here that is not
+    // under the instrument's directory came from the user.
+    if ( by_name && params.input && !params.input.toString().startsWith( "${params.prep_root}/${params.instrument}/" ) ) {
+        error "Give either --input or --instrument/--run, not both."
+    }
+    if ( !by_name && !params.input ) {
+        error "No run given. Use --instrument <brand>_<model>_<machine_ID> --run <run folder>, or --input <run_dir> (one pipeline run = one sequencing run)."
     }
 
-    def run_dir  = file( params.input, checkIfExists: true )
+    def run_dir = by_name
+        ? resolveRun( params.instrument, params.run, params.prep_root, params.input )
+        : file( params.input, checkIfExists: true )
     def platform = params.platform ?: detectPlatform( run_dir )
     def run_id   = params.run_id ?: run_dir.name
 
+    // The brand in the instrument name and the files in its run folder must
+    // agree; a mismatch means the wrong run, or a run filed under the wrong
+    // instrument, and results would be published under that instrument.
+    if ( by_name ) {
+        def expected = instrumentPlatform( params.instrument )
+        if ( !expected ) {
+            log.warn "Unknown brand in instrument '${params.instrument}'; cannot check it against the detected platform '${platform}'."
+        }
+        else if ( expected != platform ) {
+            error "Instrument '${params.instrument}' should hold ${expected} runs, but run ${run_dir} looks like ${platform}."
+        }
+    }
+
+    requireEmptyOutput( workflow.outputDir, workflow.resume, flag( params.overwrite ) )
+
     log.info "nf-seqc: run '${run_id}' on platform '${platform}'"
+    log.info "nf-seqc: reading ${run_dir}"
+    log.info "nf-seqc: publishing to ${workflow.outputDir}"
 
     // params are read here, in the entry workflow, and handed to the
     // subworkflows as inputs: reading params anywhere else is deprecated.
@@ -108,7 +179,9 @@ workflow {
         def missing = [ 'RTAComplete.txt', 'CopyComplete.txt' ].findAll { m -> !file("${run_dir}/${m}").exists() }
         requireRunComplete( run_id, missing, flag( params.allow_incomplete ) )
         ILLUMINA_QC( ch_run, fastq_dir, flag( params.include_undetermined ), max_undetermined )
-        ch_reads    = ILLUMINA_QC.out.reads
+        // The FASTQ are the instrument's, so copy them to make them publishable.
+        COPY_READS( ILLUMINA_QC.out.reads )
+        ch_reads    = COPY_READS.out.reads
         ch_qc       = ILLUMINA_QC.out.qc
         ch_metrics  = ILLUMINA_QC.out.metrics
         ch_versions = ILLUMINA_QC.out.versions
@@ -132,7 +205,13 @@ workflow {
         def unfinished = revioUnfinishedCells( bam_dir ?: run_dir ).collect { cell -> "${cell}/metadata/*.transferdone".toString() }
         requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
         PACBIO_QC( ch_run, bam_dir, max_undetermined )
-        ch_reads    = PACBIO_QC.out.reads
+        // The HiFi BAM are the instrument's, so copy them to make them
+        // publishable, with their PacBio index (.bam.pbi) where there is one.
+        COPY_READS( PACBIO_QC.out.reads.map { meta, bam ->
+            def pbi = file( "${bam}.pbi" )
+            tuple( meta, pbi.exists() ? [ bam, pbi ] : [ bam ] )
+        } )
+        ch_reads    = COPY_READS.out.reads
         ch_qc       = PACBIO_QC.out.qc
         ch_versions = PACBIO_QC.out.versions
     }
@@ -148,10 +227,10 @@ workflow {
     //  - Do NOT reshape a channel with flatMap before publishing. That loses the
     //    task provenance the output block needs and publishes nothing. `map` is
     //    fine, as are tuple channels straight off a process.
-    //  - Only task outputs can be published. `reads` therefore covers the
-    //    AVITI (bases2fastq) and Nanopore (samtools fastq) branches only —
-    //    Illumina FASTQ and Revio HiFi uBAM are written by the instrument and
-    //    stay in the run folder rather than being copied into the results.
+    //  - Only task outputs can be published. Illumina FASTQ and Revio HiFi
+    //    uBAM are written by the instrument, so COPY_READS copies them into a
+    //    task first; AVITI (bases2fastq) and Nanopore (samtools fastq) reads
+    //    are task outputs already.
     publish:
     reads    = ch_reads
     bam      = ch_bam

@@ -17,16 +17,48 @@ nextflow run . -profile test -stub
 nextflow run . -profile test_aviti -stub
 nextflow run . -profile test_nanopore -stub
 nextflow run . -profile test_pacbio -stub
+nextflow run . -profile test_publish -stub   # --instrument/--run route
 
 # Real run (GBI cluster: see below)
-nextflow run . -profile cluster --input /path/to/run_dir --outdir results
+nextflow run . -profile cluster --instrument illumina_nextseq_VH02427 --run <run folder>
 ```
+
+### Where runs are read from and published to
+
+Instruments write to
+`/mnt/instrument-prep-zone/sequencing/<brand>_<model>_<machine_ID>/<YYYY>/<run>`.
+Name a run by its instrument and folder:
+
+```bash
+nextflow run . -profile cluster --instrument pacbio_revio_84334 --run r84334_20260817_141703
+```
+
+The pipeline finds the year directory itself and publishes the MultiQC report,
+QC files and reads to the same path under `/mnt/instrument-data/sequencing/`,
+where scientists read them:
+`/mnt/instrument-data/sequencing/pacbio_revio_84334/2026/r84334_20260817_141703/`.
+The roots are `--prep_root` and `--publish_root`; `--outdir` overrides the
+destination. `--input <run_dir>` still takes any run folder, publishing to
+`--outdir` (default `results`).
+
+- The brand in `--instrument` (`illumina`, `element`, `oxford_nanopore`,
+  `pacbio`) must match the platform detected from the run's files, or the run
+  stops before any task.
+- A run is published once. If the destination already has files, the run
+  stops, unless it is a `-resume` of the run that wrote them or
+  `--overwrite` is given. `--overwrite` writes over files of the same name; it
+  does not remove files from an earlier run.
+- Results are **copied**, since the destination is another filesystem from
+  `work/`. Illumina FASTQ and Revio HiFi BAM (with `.pbi`) are copied into a
+  task first (`COPY_READS`), because only task outputs can be published, so
+  they briefly exist three times: run folder, `work/`, destination. Clean
+  `work/` once a run is published.
 
 ### Running on the GBI cluster
 
 `-profile cluster` targets the sandpit SLURM clusters and switches Apptainer on
 by itself; don't add `singularity` to it. Run folders are under
-`/mnt/instrument-data/<instrument>/` (read-only).
+`/mnt/instrument-prep-zone/sequencing/<instrument>/<YYYY>/`.
 
 On **sandpit-tokyo**, Apptainer exists only on the compute nodes, so the
 Nextflow head job must itself run as a SLURM job. Nextflow (with its Java)
@@ -40,14 +72,12 @@ set -euo pipefail
 module load nextflow
 cd ~/nf-seqc
 nextflow run . -profile cluster \
-    --input /mnt/instrument-data/element_aviti_1/<run> \
-    --outdir /mnt/lustre/users/$USER/nf-seqc/<run> \
+    --instrument element_aviti_AV252906 --run <run> \
     -w /mnt/lustre/users/$USER/nextflow-work
 ```
 
 Keep `-w` on Lustre, not the NFS home: bases2fastq writes the full FASTQ set
-into `work/`, and `--outdir` must be on the same filesystem, because results
-are published as hard links. Images are cached in the shared
+into `work/`. Images are cached in the shared
 `/mnt/lustre/containers/.staging/nf/cache/`.
 
 The head job pulls any image missing from that cache, and converting the
@@ -129,8 +159,13 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 
 | Param | Default | Purpose |
 | --- | --- | --- |
-| `--input` | — | run directory (required) |
-| `--outdir` | `results` | output directory |
+| `--instrument` | — | instrument directory, `<brand>_<model>_<machine_ID>`; with `--run` |
+| `--run` | — | run folder name, looked up under `<prep_root>/<instrument>/<YYYY>/` |
+| `--prep_root` | `/mnt/instrument-prep-zone/sequencing` | where instruments write runs |
+| `--publish_root` | `/mnt/instrument-data/sequencing` | where `--instrument`/`--run` results are published |
+| `--input` | — | run directory, instead of `--instrument`/`--run` |
+| `--outdir` | `<publish_root>/<instrument>/<YYYY>/<run>`, or `results` with `--input` | output directory |
+| `--overwrite` | `false` | publish into a destination that already has results |
 | `--platform` | auto-detect | force a platform |
 | `--run_id` | run dir name | overrides the run label |
 | `--fastq_dir` | — | Illumina: FASTQ live outside the run folder |
