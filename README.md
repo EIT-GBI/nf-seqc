@@ -41,11 +41,25 @@ The roots are `--prep_root` and `--publish_root`; `--outdir` overrides the
 destination. `--input <run_dir>` still takes any run folder, publishing to
 `--outdir` (default `results`).
 
+Inside the run folder, what scientists open sits at the top and everything
+else is in `qc/`:
+
+```
+<run>/
+├── <run>_multiqc_report.html     the QC report for the whole run
+├── <run>_QC.html                 AVITI only: Element's own run report
+├── <sample>…fastq.gz             Illumina, AVITI
+├── <sample>.bam                  Nanopore (uBAM, keeps modified-base tags)
+├── <movie>.hifi_reads.<bc>.bam   Revio, with its .pbi index
+└── qc/                           FastQC, MultiQC inputs, run metrics CSV,
+                                  software versions, publish record
+```
+
 - The brand in `--instrument` (`illumina`, `element`, `oxford_nanopore`,
   `pacbio`) must match the platform detected from the run's files, or the run
   stops before any task.
 - A run is published once. The first launch records its session ID in
-  `pipeline_info/nf-seqc_session.txt`. If the destination already has files,
+  `qc/nf-seqc_session.txt`. If the destination already has files,
   the run stops, unless it is `-resume <that session ID>` (the error names it)
   or `--overwrite` is given. Two launches of the same run at once: only one
   gets past the start. `--overwrite` writes over files of the same name; it
@@ -121,8 +135,8 @@ with `--platform illumina|aviti|nanopore|pacbio`.
 | Platform | Detected by | Reads delivered | QC |
 | --- | --- | --- | --- |
 | Illumina NextSeq | `RunInfo.xml` | already demultiplexed on-instrument, left in place | FastQC + InterOp run metrics (see below) + BCL Convert demultiplexing reports |
-| Element AVITI | `RunParameters.json` | `bases2fastq` writes FASTQ to `<outdir>/reads` | FastQC + RunStats/Metrics |
-| ONT PromethION P24 | `final_summary_*.txt`, `*.pod5` | `dorado` basecalls on **GPU** to uBAM, demultiplexes, then FASTQ | per-sample reads, yield, N50 and median Q from MinKNOW's `sequencing_summary_*.txt` (its live basecalls, no BAM is read) + per-flow-cell run metrics from MinKNOW's `report_*.json` (pore scans, occupancy, live yield and N50) + barcode counts from the pipeline's demux |
+| Element AVITI | `RunParameters.json` | `bases2fastq` writes FASTQ in the pipeline | FastQC + RunStats/Metrics |
+| ONT PromethION P24 | `final_summary_*.txt`, `*.pod5` | `dorado` basecalls on **GPU** to uBAM and demultiplexes; uBAM delivered, no FASTQ | per-sample reads, yield, N50 and median Q from MinKNOW's `sequencing_summary_*.txt` (its live basecalls, no BAM is read) + per-flow-cell run metrics from MinKNOW's `report_*.json` (pore scans, occupancy, live yield and N50) + barcode counts from the pipeline's demux |
 | PacBio Revio | `<well>/pb_formats/*.consensusreadset.xml`, `<well>/hifi_reads/*.hifi_reads*.bam` | HiFi uBAM already final, left in place | read from the instrument's own reports, no BAM is read: per-sample HiFi reads, yield, length, QV and barcode quality (`barcodes.report.json`) + per-SMRT-Cell run metrics (P0/P1/P2, HiFi yield, N50, QV) + lima barcode counts |
 
 MinKNOW does not split POD5 cleanly by barcode: `pod5_pass/mixed/` holds part

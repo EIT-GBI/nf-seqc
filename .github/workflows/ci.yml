@@ -88,8 +88,8 @@ jobs:
           set -euo pipefail
           nextflow run . -profile test_publish -stub-run
           out=results-test-publish/illumina_nextseq_VH00000/2026/illumina_run
-          for f in multiqc/illumina_run_multiqc_report.html pipeline_info/nf-seqc_session.txt \
-                   reads/TEST1_S1_L001_R1_001.fastq.gz reads/TEST1_S1_L001_R2_001.fastq.gz; do
+          for f in illumina_run_multiqc_report.html qc/nf-seqc_session.txt \
+                   TEST1_S1_L001_R1_001.fastq.gz TEST1_S1_L001_R2_001.fastq.gz; do
             test -f "$out/$f" || { echo "::error::missing $out/$f"; ls -R results-test-publish || true; exit 1; }
           done
           # A second launch into the published run must be refused.

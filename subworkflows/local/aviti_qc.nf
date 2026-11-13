@@ -14,6 +14,12 @@ include { demuxSummary; barcodeName; readShareTable; demuxSummaryTable; unknownB
 // matches and a List when several do. `[] + path` does NOT wrap a single Path:
 // Path is Iterable over its directory components, so it yields every parent
 // directory (home, runner, work, ...) as if it were a file. Wrap explicitly.
+// Element's own run QC report (<run>_QC.html): published next to the MultiQC
+// report rather than with the QC files, because scientists open it directly.
+def isElementReport( f ) {
+    return f.name.endsWith('_QC.html')
+}
+
 def asFileList( files ) {
     return files instanceof List ? files : [ files ]
 }
@@ -92,7 +98,7 @@ workflow AVITI_QC {
 
     ch_qc = channel.empty()
         .mix( FASTQC_FASTQC.out.zip.map { _meta, zip -> zip } )
-        .mix( BASES2FASTQ.out.stats.flatMap { _meta, stats -> asFileList( stats ) } )
+        .mix( BASES2FASTQ.out.stats.flatMap { _meta, stats -> asFileList( stats ).findAll { f -> !isElementReport( f ) } } )
         .mix( BASES2FASTQ.out.sample_stats.flatMap { _meta, stats -> asFileList( stats ) } )
         .mix( ch_read_share )
         .mix( ch_demux_summary )
@@ -103,6 +109,8 @@ workflow AVITI_QC {
         .mix( BASES2FASTQ.out.versions_bases2fastq )
 
     emit:
+    report   = BASES2FASTQ.out.stats.map { _meta, stats -> asFileList( stats ).find { f -> isElementReport( f ) } }
+                   .filter { f -> f } // channel: path — Element's <run>_QC.html
     reads    = ch_pairs.map { meta, r1, r2 -> tuple( meta, [ r1, r2 ].flatten().findAll { f -> f } ) }
     qc       = ch_qc
     versions = ch_versions
