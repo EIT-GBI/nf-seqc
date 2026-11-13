@@ -136,8 +136,12 @@ def qv(value):
     if value is None or value < 0:
         return None
     if value <= 1:
-        return MAX_QV if value >= 1 else min(MAX_QV, -10 * math.log10(1 - value))
-    return min(MAX_QV, value)
+        q = MAX_QV if value >= 1 else min(MAX_QV, -10 * math.log10(1 - value))
+    else:
+        q = min(MAX_QV, value)
+    # Rounded, so accuracy 0.99 is QV 20 (not 19.999...) and counts as HiFi,
+    # and boundary values land in their own QV bin.
+    return round(q, 6)
 
 
 def number(value):

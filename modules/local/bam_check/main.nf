@@ -2,6 +2,8 @@
 //
 //   - samtools quickcheck -u: the header and the BGZF end-of-file block are
 //     there, so the file is not truncated (-u: unaligned BAM, no @SQ needed).
+//     A read error while scanning the first reads (a block damaged in the
+//     middle, which quickcheck cannot see) also counts as FAIL.
 //   - MM/ML tags in the first `max_reads` reads: which modifications the reads
 //     carry (6mA, 5mC, ...) and the share of reads tagged. Modified bases are
 //     only called when asked for (--basecall.modified_bases on Nanopore), and
@@ -32,7 +34,8 @@ process BAM_CHECK {
     def b    = bams ? bams[0] : bam
     """
     if samtools quickcheck -u -v "${b}" > quickcheck.txt 2>&1; then quick=PASS; else quick=FAIL; fi
-    # head closes the pipe early; samtools' resulting SIGPIPE is expected.
+    # head closes the pipe early; samtools' resulting SIGPIPE is expected, and
+    # so is the error it then writes about the closed pipe.
     { samtools view "${b}" 2> view.err || true; } | head -n ${max_reads} | awk -F '\\t' '
         {
             n++
@@ -56,6 +59,9 @@ process BAM_CHECK {
             for ( c in codes ) list = list ( list == "" ? "" : "," ) c
             printf "%d\\t%d\\t%d\\t%s\\n", n + 0, with_mm + 0, with_ml + 0, list
         }' > tags.tsv
+    # Any other samtools error is a read error in the reads scanned: a BAM
+    # damaged in the middle, which quickcheck (header and end only) misses.
+    if grep -viqE 'broken pipe|error closing standard output|writing to standard output|failed to write' view.err; then quick=FAIL; fi
     printf '%s\\t%s\\t' '${meta.id}' "\$quick" > ${meta.id}.bam_check.tsv
     cat tags.tsv >> ${meta.id}.bam_check.tsv
     """

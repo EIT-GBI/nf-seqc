@@ -19,12 +19,14 @@ Writes:
 
       barcode  pass_reads  fail_reads  pass_bases  mean_length  n50  median_q
 
-* --mqc-dir: MultiQC custom-content JSON, one file per section. Series are
-  named after the pipeline's samples (sample-sheet alias, else the barcode;
-  see ontSamples() in nanopore_qc.nf), flow-cell-level series after the flow
-  cell. Each section has a fixed id, so the files of several flow cells merge
-  into one plot; that is why no plot here has several datasets (MultiQC keeps
-  only the last file's datasets).
+* --mqc-dir: MultiQC custom-content JSON, one file per section. Per-sample
+  series are named with --samples, the pipeline's own sample ids (from the
+  samples it reports, see ontSampleIds() in nanopore_qc.nf), so they match
+  General Statistics; flow-cell-level series after the flow cell. Each section
+  has a fixed id, so the files of several flow cells merge into one plot.
+  MultiQC merges only the data, keeping the last file's settings, so nothing
+  but the data may depend on the flow cell (no per-file category lists or
+  colours), and no plot has several datasets (only the last file's survive).
 """
 
 import argparse
@@ -300,7 +302,6 @@ def summary_sections(samples, per_flowcell, flowcell, start_s):
         {"xlab": "Bases per second", "ylab": "% of pass reads", "ymin": 0, "xmin": 0, "xmax": 1000},
     ))
 
-    reasons = sorted({r for s in named.values() for r in s.end_reasons})
     out.append(section(
         "ont_end_reasons", "Read end reasons",
         "Why each read ended, from sequencing_summary. signal_positive is a strand leaving the pore normally; "
@@ -309,7 +310,8 @@ def summary_sections(samples, per_flowcell, flowcell, start_s):
         "bargraph",
         {n: dict(s.end_reasons) for n, s in named.items() if s.end_reasons},
         {"ylab": "Reads", "cpswitch_c_active": False},
-        categories=reasons,
+        # No category list: MultiQC keeps only the last flow cell's, which would
+        # drop reasons only other flow cells have. Without one it uses them all.
     ))
 
     scored = {n: s for n, s in named.items() if sum(s.bc_score.values())}
@@ -425,11 +427,16 @@ def report_sections(reports, flowcell):
 
         temps = ((acq.get("temperature") or [{}])[0]).get("temperatures") or []
         temperature[name] = {}
-        for i, t in enumerate(temps):
-            device = next((v for k, v in t.items() if k != "target_temperature" and isinstance(v, dict)), {})
-            value = device.get("heatsink_temperature", device.get("flowcell_temperature"))
-            if value is not None and i < len(hours):
-                temperature[name][round(hours[i], 2)] = value
+        # One reading per pore-activity bucket; anything else and the readings
+        # cannot be placed in time, so the flow cell gets no temperature line.
+        if len(temps) == len(hours):
+            for i, t in enumerate(temps):
+                device = next((v for k, v in t.items() if k != "target_temperature" and isinstance(v, dict)), {})
+                # The flow cell's own sensor where the device has one (PromethION),
+                # else the heatsink (MinION).
+                value = device.get("flowcell_temperature", device.get("heatsink_temperature"))
+                if value is not None:
+                    temperature[name][round(hours[i], 2)] = value
 
         # The voltage in force at the end of each 10-minute bin. MinKNOW logs a
         # reading only when it changes (tens of thousands over a three-day run,
@@ -458,7 +465,9 @@ def report_sections(reports, flowcell):
                     "message": (m.get("user_message") or "").strip(),
                 }
 
-    states = sorted({g for t in totals.values() for g in t}, key=lambda g: list(STATE_GROUPS).index(g) if g in STATE_GROUPS else 99)
+    # Every group, whatever this flow cell saw: MultiQC keeps only the last
+    # flow cell's category list, so it must not depend on the data.
+    states = list(STATE_GROUPS)
     out = [
         section(
             "ont_pore_activity_total", "Pore activity",
@@ -478,9 +487,7 @@ def report_sections(reports, flowcell):
             "linegraph",
             activity,
             {"xlab": "Hours", "ylab": "% of channel time", "ymin": 0, "ymax": 100, "xmin": 0,
-             # MinKNOW's colours, so the plot reads like its own pore activity plot
-             "colors": {n: STATE_GROUPS[g][1] for n in activity for g in STATE_GROUPS
-                        if n.endswith(": " + STATE_GROUPS[g][0])}},
+},
         ),
         section(
             "ont_pore_occupancy", "Pore occupancy",
@@ -493,7 +500,8 @@ def report_sections(reports, flowcell):
     if any(temperature.values()):
         out.append(section(
             "ont_temperature", "Temperature",
-            "Device heatsink temperature per time bucket, from report_*.json. MinKNOW holds it near the target "
+            "Flow cell temperature (PromethION) or device heatsink temperature (MinION) per time bucket, from "
+            "report_*.json. MinKNOW holds it near the target "
             "(35-37 °C); drift means the device struggled to regulate it.",
             "linegraph",
             {n: t for n, t in temperature.items() if t},
@@ -530,28 +538,32 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("summaries", nargs="+", help="sequencing_summary_*.txt of one flow cell")
     parser.add_argument("-o", "--output", required=True)
-    parser.add_argument("--report", nargs="*", default=[], help="report_*.json of the same flow cell")
+    parser.add_argument("--report", action="append", default=[], help="a report_*.json of the same flow cell (repeatable)")
+    parser.add_argument("--offset", action="append", type=float, default=[],
+                        help="seconds the i-th summary's acquisition started after the first (repeatable, in summary order)")
     parser.add_argument("--flowcell", default="flowcell", help="flow cell id, names flow-cell-level series")
-    parser.add_argument("--plain-name", help="sample name when the flow cell is not barcoded")
-    parser.add_argument("--suffix-flowcell", action="store_true",
-                        help="append _<flowcell> to sample names (the run has several flow cells)")
-    parser.add_argument("--aliases", help="JSON {barcode: alias} from the sample sheet")
+    parser.add_argument("--samples", default="{}",
+                        help="JSON {barcode: sample id} ('all' for an unbarcoded flow cell): the pipeline's samples. "
+                             "Only these are plotted, under these names; empty plots every barcode under its own name")
     parser.add_argument("--mqc-dir", help="write MultiQC custom-content JSON here")
-    parser.add_argument("--min-reads", type=int, default=0,
-                        help="leave barcodes with fewer reads out of the plots, as the pipeline leaves them out of its samples")
     args = parser.parse_args()
 
-    aliases = json.loads(args.aliases) if args.aliases else {}
+    sample_ids = json.loads(args.samples)
     by_barcode = collections.defaultdict(Stats)
     everything = Stats()
     q_time = collections.defaultdict(collections.Counter)
     channels = collections.defaultdict(set)
     start_s = None
-    for path in args.summaries:
+    for i, path in enumerate(args.summaries):
+        # Each summary counts time from its own acquisition's start; a restart
+        # is shifted to follow the first on one axis.
+        offset = args.offset[i] if i < len(args.offset) else 0.0
         with open(path, newline="") as handle:
             reader = csv.DictReader(handle, delimiter="\t")
             for read in reader:
                 start = as_float(read.get("start_time"))
+                if start is not None:
+                    start += offset
                 duration = as_float(read.get("duration"))
                 row = {
                     "length": int(read.get("sequence_length_template") or 0),
@@ -583,22 +595,16 @@ def main():
         return
     os.makedirs(args.mqc_dir, exist_ok=True)
 
-    # Name series as the pipeline names its samples.
+    # Name series after the pipeline's samples; a barcode that is not one
+    # (below --min_barcode_reads, or unclassified without --include_failed) is
+    # not plotted. Without --samples every barcode is, under its own name.
     barcoded = any(b != "unclassified" for b in by_barcode)
-    if barcoded:
-        samples = {}
-        for barcode, s in by_barcode.items():
-            if barcode != "unclassified" and s.pass_reads + s.fail_reads < args.min_reads:
-                continue
-            if barcode == "unclassified":
-                name = f"unclassified_{args.flowcell}"
-            else:
-                name = safe_id(aliases.get(barcode) or barcode)
-                if args.suffix_flowcell:
-                    name = f"{name}_{args.flowcell}"
-            samples[name] = s
+    if not barcoded:
+        samples = {sample_ids.get("all") or args.flowcell: everything}
+    elif sample_ids:
+        samples = {sample_ids[b]: s for b, s in by_barcode.items() if b in sample_ids}
     else:
-        samples = {args.plain_name or args.flowcell: everything}
+        samples = {(f"unclassified_{args.flowcell}" if b == "unclassified" else b): s for b, s in by_barcode.items()}
 
     sections = summary_sections(samples, {"q_time": q_time, "channels": channels}, args.flowcell, start_s or 0)
     sections += report_sections(args.report, args.flowcell)

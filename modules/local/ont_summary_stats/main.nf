@@ -4,16 +4,22 @@
 // summaries describe MinKNOW's live basecalls and barcoding, not the
 // pipeline's re-basecalled reads.
 //
-// meta.flowcell names flow-cell-level series; meta.aliases ([ barcode: alias ]),
-// meta.plain_name (an unbarcoded flow cell's sample) and meta.multi_flowcell
-// make the plot series match the pipeline's sample names (ontSamples() in
-// nanopore_qc.nf). Barcodes with fewer than min_reads reads are left out of
-// the plots, as they are left out of the samples.
+// meta.flowcell names flow-cell-level series. meta.samples ([ barcode: id ],
+// 'all' for an unbarcoded flow cell) is the pipeline's own sample ids, so the
+// plot series match General Statistics and only reported samples are
+// plotted. meta.offsets gives, per summary, how many seconds its acquisition
+// started after the flow cell's first, so a restart follows it on the time
+// axis.
 //
 // Local module — nanopore-specific and pipeline-shaped; promote to an nf-mod
 // repo only if another pipeline needs it. Publishing is handled by the
 // workflow `output {}` block. The script ships as a module binary
 // (resources/usr/bin/), so editing it does not invalidate -resume.
+
+// A value single-quoted for the shell, any ' in it closed and escaped.
+def shellQuote( value ) {
+    return "'" + value.toString().replace("'", "'\\''") + "'"
+}
 
 process ONT_SUMMARY_STATS {
     tag "${meta.id}"
@@ -21,7 +27,6 @@ process ONT_SUMMARY_STATS {
 
     input:
     tuple val(meta), path(summaries, stageAs: 'summary?/*'), path(reports, stageAs: 'report?/*')
-    val min_reads
 
     output:
     tuple val(meta), path("${meta.id}.summary_stats.tsv"), emit: stats
@@ -29,19 +34,16 @@ process ONT_SUMMARY_STATS {
     tuple val("${task.process}"), val('python'), eval('python3 --version | sed "s/^Python //"'), emit: versions_python, topic: versions
 
     script:
-    // Single-quoted for the shell, so a ' in an alias is closed and escaped.
-    def aliases = groovy.json.JsonOutput.toJson( meta.aliases ?: [:] ).replace("'", "'\\''")
-    def report  = reports ? "--report ${reports}" : ''
-    def plain   = meta.plain_name ? "--plain-name '${meta.plain_name}'" : ''
-    def suffix  = meta.multi_flowcell ? '--suffix-flowcell' : ''
+    def samples = groovy.json.JsonOutput.toJson( meta.samples ?: [:] )
+    def offsets = ( meta.offsets ?: [] ).collect { o -> "--offset ${o}" }.join(' ')
+    def report  = ( reports instanceof List ? reports : [ reports ] ).findAll { r -> r }.collect { r -> "--report ${r}" }.join(' ')
     """
     ont_summary_stats.py \\
         -o ${meta.id}.summary_stats.tsv \\
-        --flowcell '${meta.flowcell}' \\
-        --aliases '${aliases}' \\
-        --min-reads ${min_reads} \\
+        --flowcell ${shellQuote( meta.flowcell )} \\
+        --samples ${shellQuote( samples )} \\
         --mqc-dir mqc \\
-        ${report} ${plain} ${suffix} \\
+        ${offsets} ${report} \\
         ${summaries}
     """
 
