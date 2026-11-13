@@ -10,6 +10,24 @@ include { BASES2FASTQ   } from '../../modules/local/bases2fastq/main.nf'
 include { FASTQC_FASTQC } from '../../modules/fastqc/fastqc/main.nf'
 include { demuxSummary; barcodeName; readShareTable; demuxSummaryTable; unknownBarcodesTable } from './demux_report.nf'
 
+// Element's own run QC report (<run>_QC.html): published next to the MultiQC
+// report rather than with the QC files, because scientists open it directly.
+def isElementReport( f ) {
+    return f.name.endsWith('_QC.html')
+}
+
+// PhiX is the run's spike-in control, not a sample: no FASTQ delivered, no
+// FastQC, no sample row. Its numbers stay in bases2fastq's own reports.
+def isPhiX( f ) {
+    return f.name.startsWith('PhiX_')
+}
+
+// Reads bases2fastq could not assign to a sample: always delivered, QC'd only
+// with --include_undetermined.
+def isUnassigned( f ) {
+    return f.name.startsWith('Unassigned')
+}
+
 // A process output declared as path("*.x") is a single Path when one file
 // matches and a List when several do. `[] + path` does NOT wrap a single Path:
 // Path is Iterable over its directory components, so it yields every parent
@@ -53,23 +71,21 @@ workflow AVITI_QC {
     ch_pairs = BASES2FASTQ.out.fastq.flatMap { meta, fastqs ->
         def files = asFileList( fastqs )
 
-        if ( !include_undetermined ) {
-            files = files.findAll { f -> !f.name.startsWith('Unassigned') }
-        }
+        files = files.findAll { f -> !isPhiX( f ) }
 
         def r1s = files.findAll { f -> f.name ==~ /.*_R1(_001)?\.fastq\.gz$/ }
-        if ( !r1s ) {
+        if ( !r1s.findAll { f -> !isUnassigned( f ) } ) {
             error "AVITI_QC: bases2fastq produced no R1 FASTQ. Check the run manifest in ${meta.id}."
         }
 
         r1s.sort().collect { r1 ->
             def r2  = files.find { f -> f.name == r1.name.replace('_R1', '_R2') }
             def sid = r1.name.replaceAll(/_R1(_001)?\.fastq\.gz$/, '')
-            tuple( meta + [ id: sid, single_end: r2 == null ], r1, r2 ?: [] )
+            tuple( meta + [ id: sid, single_end: r2 == null, undetermined: isUnassigned( r1 ) ], r1, r2 ?: [] )
         }
     }
 
-    FASTQC_FASTQC( ch_pairs )
+    FASTQC_FASTQC( ch_pairs.filter { meta, _r1, _r2 -> include_undetermined || !meta.undetermined } )
 
     // flatMap: a missing or empty RunStats.json gives no tables rather than an error
     ch_demux = BASES2FASTQ.out.stats.flatMap { meta, stats ->
@@ -92,8 +108,10 @@ workflow AVITI_QC {
 
     ch_qc = channel.empty()
         .mix( FASTQC_FASTQC.out.zip.map { _meta, zip -> zip } )
-        .mix( BASES2FASTQ.out.stats.flatMap { _meta, stats -> asFileList( stats ) } )
-        .mix( BASES2FASTQ.out.sample_stats.flatMap { _meta, stats -> asFileList( stats ) } )
+        .mix( BASES2FASTQ.out.stats.flatMap { _meta, stats -> asFileList( stats ).findAll { f -> !isElementReport( f ) } } )
+        .mix( BASES2FASTQ.out.sample_stats.flatMap { _meta, stats ->
+            asFileList( stats ).findAll { f -> !isPhiX( f ) && ( include_undetermined || !isUnassigned( f ) ) }
+        } )
         .mix( ch_read_share )
         .mix( ch_demux_summary )
         .mix( ch_unknown_barcodes )
@@ -103,6 +121,11 @@ workflow AVITI_QC {
         .mix( BASES2FASTQ.out.versions_bases2fastq )
 
     emit:
+    // channel: path — published in qc/ for scientists, not read by MultiQC
+    files    = FASTQC_FASTQC.out.html.map { _meta, html -> html }
+                   .mix( BASES2FASTQ.out.run_files.map { _meta, f -> f } )
+    report   = BASES2FASTQ.out.stats.map { _meta, stats -> asFileList( stats ).find { f -> isElementReport( f ) } }
+                   .filter { f -> f } // channel: path — Element's <run>_QC.html
     reads    = ch_pairs.map { meta, r1, r2 -> tuple( meta, [ r1, r2 ].flatten().findAll { f -> f } ) }
     qc       = ch_qc
     versions = ch_versions

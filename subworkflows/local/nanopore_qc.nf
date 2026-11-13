@@ -18,6 +18,9 @@
 // its barcode, and DORADO_DEMUX then splits all of a flow cell's reads by that
 // tag. Unbarcoded flow cells skip the demux: each folder's BAM is the sample.
 //
+// Scientists get the per-sample uBAM only (it keeps modified-base tags); no
+// FASTQ is made.
+//
 // Per-sample read statistics come from MinKNOW's sequencing_summary_*.txt (one
 // row per read, written next to final_summary), not from the BAM: they
 // describe MinKNOW's live basecalls and barcoding. Sample rows and % Reads
@@ -26,7 +29,6 @@
 
 include { DORADO_BASECALLER } from '../../modules/dorado/basecaller/main.nf'
 include { DORADO_DEMUX      } from '../../modules/dorado/demux/main.nf'
-include { SAMTOOLS_FASTQ    } from '../../modules/samtools/fastq/main.nf'
 include { ONT_SUMMARY_STATS } from '../../modules/local/ont_summary_stats/main.nf'
 include { demuxSummary; readShareTable; demuxSummaryTable } from './demux_report.nf'
 
@@ -116,7 +118,7 @@ def demuxBarcode( bam ) {
     return m.find() ? m.group(1) : bam.name - ~/\.bam$/
 }
 
-// Sample ids end up in file names (the per-sample BAM and FASTQ).
+// Sample ids end up in file names (the per-sample BAM).
 def safeId( String name ) {
     return name.replaceAll(/[^A-Za-z0-9._-]+/, '_')
 }
@@ -499,16 +501,17 @@ workflow NANOPORE_QC {
 
     // A barcode becomes a sample only with --min_barcode_reads reads; an
     // unbarcoded flow cell's sample always does, and so does every barcode
-    // when there are no counts to judge by (no barcoding_summary.txt).
-    ch_bam = ch_all
+    // when there are no counts to judge by (no barcoding_summary.txt). The
+    // unclassified BAM is always delivered (ch_delivered), but reported as a
+    // sample (ch_bam) only with --include_failed.
+    ch_delivered = ch_all
         .combine( ch_counts )
         .filter { meta, _bam, counts ->
-            meta.barcode == 'unclassified' ? include_failed
-                : !meta.barcode || !counts.reads || ( counts.reads[ meta.id ] ?: 0L ) >= min_reads
+            meta.barcode == 'unclassified'
+                || !meta.barcode || !counts.reads || ( counts.reads[ meta.id ] ?: 0L ) >= min_reads
         }
         .map { meta, bam, _counts -> tuple( meta, bam ) }
-
-    SAMTOOLS_FASTQ( ch_bam )
+    ch_bam = ch_delivered.filter { meta, _bam -> meta.barcode != 'unclassified' || include_failed }
 
     // From the run folder, not --pod5_dir: MinKNOW writes its reports next to
     // final_summary, whichever disk the POD5 were moved to.
@@ -557,8 +560,10 @@ workflow NANOPORE_QC {
         .mix( ONT_SUMMARY_STATS.out.versions_python )
 
     emit:
-    reads    = SAMTOOLS_FASTQ.out.reads // FASTQ for scientists
-    bam      = ch_bam                   // per-sample uBAM, carries modified-base tags
+    // Per flow cell: the barcode dorado gave each read, with its score. Lets
+    // anyone re-check the demultiplexing. meta.id is the flow cell.
+    barcoding = DORADO_DEMUX.out.summary
+    bam      = ch_delivered             // per-sample uBAM (+ unclassified), carries modified-base tags
     qc       = ch_qc
     versions = ch_versions
 }

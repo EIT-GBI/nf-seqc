@@ -77,9 +77,10 @@ def safeId( String name ) {
 
 // [ meta, bam ] per HiFi BAM, meta.id the BioSample name (barcoded cell), the
 // well sample name (unbarcoded cell) or the BAM name (no
-// consensusreadset.xml). Failed reads get a _fail suffix. A name used by more
-// than one cell (a library re-sequenced) is suffixed with the well, so General
-// Statistics keeps one row per cell.
+// consensusreadset.xml). Only HiFi BAMs come here (failed reads are counted
+// per barcode from lima, not delivered). A name used by more than one cell (a
+// library re-sequenced) is suffixed with the well, so General Statistics keeps
+// one row per cell.
 def revioSamples( meta, List bams ) {
     def names = [:]
     def rows = bams.collect { bam ->
@@ -96,9 +97,6 @@ def revioSamples( meta, List bams ) {
         def name = b.barcode
             ? ( n.barcodes[ b.barcode ] ?: b.barcode )
             : ( n.well_sample ?: b.movie )
-        if ( b.kind == 'fail_reads' ) {
-            name = "${name}_fail"
-        }
         def well = cell ? cell.name : b.movie
         [ meta: meta + [ id: safeId( name ), well: well, movie: b.movie, barcode: b.barcode ], bam: bam ]
     }
@@ -477,6 +475,17 @@ workflow PACBIO_QC {
 
     ch_bam = ch_samples.flatMap { samples -> samples }
 
+    // Reads lima could not assign to a barcode: delivered with the samples as
+    // unassigned_<well>.hifi_reads.bam, but not a sample and not QC'd.
+    ch_unassigned = ch_run.flatMap { meta, run_dir ->
+        def root = bam_dir ?: run_dir
+        ( files("${root}/**/*.hifi_reads.unassigned.bam") + files("${root}/*.hifi_reads.unassigned.bam") )
+            .findAll { f -> f.exists() }
+            .unique()
+            .sort()
+            .collect { bam -> tuple( meta + [ id: "unassigned_${revioCell( bam )?.name ?: revioBamName( bam )?.movie ?: 'cell'}".toString(), unassigned: true ], bam ) }
+    }
+
     // flatMap, not map + filter: ch_samples is a value channel (see ILLUMINA_QC).
     ch_demux = ch_samples.flatMap { samples ->
         def demux = limaReads( samples )
@@ -512,7 +521,7 @@ workflow PACBIO_QC {
     ch_versions = ch_samples.flatMap { samples -> revioSoftwareVersions( samples ) }
 
     emit:
-    reads    = ch_bam // HiFi uBAM delivered unchanged
+    reads    = ch_bam.mix( ch_unassigned ) // HiFi uBAM delivered unchanged, unassigned included
     qc       = ch_qc
     versions = ch_versions
 }

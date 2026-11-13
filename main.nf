@@ -44,14 +44,25 @@ def resolveRun( String instrument, String run, String prep_root, String found ) 
 }
 
 // A run is published once. The first launch claims the output directory by
-// creating pipeline_info/nf-seqc_session.txt, holding its session ID, before any
+// creating qc/nf-seqc_session.txt, holding its session ID, before any
 // task runs. A later launch into a directory with files in it is refused unless
 // it is a -resume of that same session (Nextflow keeps the session ID on
 // -resume; a bare -resume takes the last launch's, which after a refused
-// launch is the wrong one, so the error names it) or --overwrite is given. The claim file is created atomically, so of
-// two launches that both find the directory empty, only one proceeds.
-def claimOutput( out, String session, boolean resuming, boolean overwrite ) {
-    def claim = out.resolve( 'pipeline_info/nf-seqc_session.txt' )
+// launch is the wrong one, so the error names it) or --overwrite is given.
+// The claim file is created atomically, so of two launches that both find the
+// directory empty, only one proceeds.
+//
+// A delivered run (--instrument/--run) published before the option C layout
+// (reads/, multiqc/, ...) is refused outright, even with -resume or
+// --overwrite: either would add the new layout beside the old one and leave
+// every read file there twice. Scratch output (--input, test profiles) is
+// not checked, so old local test folders can still be written over.
+def claimOutput( out, String session, boolean resuming, boolean overwrite, boolean delivered ) {
+    def old_layout = delivered ? [ 'reads', 'bam', 'multiqc', 'metrics', 'pipeline_info' ].findAll { d -> out.resolve( d ).isDirectory() } : []
+    if ( old_layout ) {
+        error "Output directory ${out} was published in the old layout (${old_layout.collect { d -> "${d}/" }.join(', ')}). Move or remove it before publishing this run again."
+    }
+    def claim = out.resolve( 'qc/nf-seqc_session.txt' )
     def owner = claim.exists() ? claim.text.trim() : null
     if ( resuming && owner == session ) {
         return
@@ -167,7 +178,7 @@ workflow {
         }
     }
 
-    claimOutput( workflow.outputDir, workflow.sessionId.toString(), workflow.resume, flag( params.overwrite ) )
+    claimOutput( workflow.outputDir, workflow.sessionId.toString(), workflow.resume, flag( params.overwrite ), by_name )
 
     log.info "nf-seqc: run '${run_id}' on platform '${platform}'"
     log.info "nf-seqc: reading ${run_dir}"
@@ -188,6 +199,9 @@ workflow {
 
     ch_reads    = channel.empty()
     ch_bam      = channel.empty()
+    ch_reports  = channel.empty() // instrument vendors' own HTML reports, made by the pipeline
+    ch_files    = channel.empty() // more files for scientists in qc/ that MultiQC does not read
+    ch_barcoding = channel.empty() // Nanopore: dorado's per-read barcode calls, per flow cell
     ch_qc       = channel.empty()
     ch_metrics  = channel.empty()
     ch_versions = channel.empty()
@@ -197,7 +211,8 @@ workflow {
         requireRunComplete( run_id, missing, flag( params.allow_incomplete ) )
         ILLUMINA_QC( ch_run, fastq_dir, flag( params.include_undetermined ), max_undetermined )
         // The FASTQ are the instrument's, so copy them to make them publishable.
-        COPY_READS( ILLUMINA_QC.out.reads )
+        COPY_READS( ILLUMINA_QC.out.reads.map { meta, fastqs -> tuple( meta, fastqs, fastqs.collect { f -> f.name } ) } )
+        ch_files    = ILLUMINA_QC.out.files
         ch_reads    = COPY_READS.out.reads
         ch_qc       = ILLUMINA_QC.out.qc
         ch_metrics  = ILLUMINA_QC.out.metrics
@@ -206,6 +221,8 @@ workflow {
     else if ( platform == 'aviti' ) {
         AVITI_QC( ch_run, flag( params.include_undetermined ), max_undetermined )
         ch_reads    = AVITI_QC.out.reads
+        ch_reports  = AVITI_QC.out.report
+        ch_files    = AVITI_QC.out.files
         ch_qc       = AVITI_QC.out.qc
         ch_versions = AVITI_QC.out.versions
     }
@@ -213,8 +230,8 @@ workflow {
         def unfinished = nanoporeUnfinished( pod5_dir ?: run_dir ).collect { acq -> "${acq}/final_summary_*.txt".toString() }
         requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
         NANOPORE_QC( ch_run, pod5_dir, flag( params.include_failed ), params.barcode_kit, params.basecall.model, max_undetermined, params.min_barcode_reads as long )
-        ch_reads    = NANOPORE_QC.out.reads
         ch_bam      = NANOPORE_QC.out.bam
+        ch_barcoding = NANOPORE_QC.out.barcoding
         ch_qc       = NANOPORE_QC.out.qc
         ch_versions = NANOPORE_QC.out.versions
     }
@@ -223,10 +240,15 @@ workflow {
         requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
         PACBIO_QC( ch_run, bam_dir, max_undetermined )
         // The HiFi BAM are the instrument's, so copy them to make them
-        // publishable, with their PacBio index (.bam.pbi) where there is one.
+        // publishable, with their PacBio index (.bam.pbi) where there is one,
+        // renamed after the sample: <sample>.hifi_reads.bam. The instrument's
+        // names (<movie>.hifi_reads.<barcode>.bam) stay in the prep zone.
         COPY_READS( PACBIO_QC.out.reads.map { meta, bam ->
-            def pbi = file( "${bam}.pbi" )
-            tuple( meta, pbi.exists() ? [ bam, pbi ] : [ bam ] )
+            def pbi  = file( "${bam}.pbi" )
+            def name = "${meta.id}.hifi_reads.bam".toString()
+            pbi.exists()
+                ? tuple( meta, [ bam, pbi ], [ name, "${name}.pbi".toString() ] )
+                : tuple( meta, [ bam ], [ name ] )
         } )
         ch_reads    = COPY_READS.out.reads
         ch_qc       = PACBIO_QC.out.qc
@@ -246,38 +268,55 @@ workflow {
     //    fine, as are tuple channels straight off a process.
     //  - Only task outputs can be published. Illumina FASTQ and Revio HiFi
     //    uBAM are written by the instrument, so COPY_READS copies them into a
-    //    task first; AVITI (bases2fastq) and Nanopore (samtools fastq) reads
-    //    are task outputs already.
+    //    task first; AVITI (bases2fastq) FASTQ and Nanopore (dorado demux)
+    //    uBAM are task outputs already.
     publish:
     reads    = ch_reads
     bam      = ch_bam
     qc       = ch_qc
+    qc_files = ch_files.mix( BATCH_REPORT.out.data )
+    barcoding = ch_barcoding
     metrics  = ch_metrics
-    report   = BATCH_REPORT.out.report
+    report   = BATCH_REPORT.out.report.mix( ch_reports )
     versions = BATCH_REPORT.out.versions
 }
 
+// Run folder layout ("option C", agreed with the team on 2026-11-13): what
+// scientists open sits at the top of the run folder (the reports and the
+// reads), and everything else (FastQC, MultiQC inputs, run metrics, versions,
+// the publish claim) goes in qc/.
 output {
     reads {
-        path 'reads'
+        path '.'
     }
     // Nanopore per-sample uBAM. Renamed after the sample: dorado demux names
     // them <kit>_barcodeNN.bam under demux/.
     bam {
-        path { meta, bam -> bam >> "bam/${meta.id}.bam" }
+        path { meta, bam -> bam >> "${meta.id}.bam" }
+    }
+    // The MultiQC report, and on AVITI Element's own <run>_QC.html.
+    report {
+        path '.'
     }
     qc {
         path 'qc'
     }
+    // FastQC HTML, bases2fastq's index tables and log, and the MultiQC data
+    // folder (the report's tables as text).
+    qc_files {
+        path 'qc'
+    }
+    // dorado writes demux/barcoding_summary.txt in every flow cell's task;
+    // renamed so several flow cells do not overwrite each other.
+    barcoding {
+        path { meta, summary -> summary >> "qc/${meta.id}.barcoding_summary.txt" }
+    }
     // One-row-per-run CSV, column-compatible with the log kept by
     // EIT-GBI/Automate-Seq-Run-Metrics-Collection so rows can be concatenated.
     metrics {
-        path 'metrics'
-    }
-    report {
-        path 'multiqc'
+        path 'qc'
     }
     versions {
-        path 'pipeline_info'
+        path 'qc'
     }
 }

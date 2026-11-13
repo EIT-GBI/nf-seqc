@@ -77,6 +77,12 @@ def demuxReads( stats ) {
     return demuxSummary( reads.findAll { id, _n -> id != 'Undetermined' }, reads['Undetermined'] ?: 0L, barcodes )
 }
 
+// Reads BCL Convert could not assign to a sample: always delivered, QC'd only
+// with --include_undetermined.
+def isUndetermined( f ) {
+    return f.name.startsWith('Undetermined')
+}
+
 workflow ILLUMINA_QC {
 
     take:
@@ -97,10 +103,7 @@ workflow ILLUMINA_QC {
             .findAll { f -> f.exists() }
             .unique()
 
-        if ( !include_undetermined ) {
-            r1s = r1s.findAll { f -> !f.name.startsWith('Undetermined') }
-        }
-        if ( !r1s ) {
+        if ( !r1s.findAll { f -> !isUndetermined( f ) } ) {
             error "ILLUMINA_QC: no *_R1_001.fastq.gz found under ${root}. Has the run been demultiplexed? Point --fastq_dir at the FASTQ directory if they live elsewhere."
         }
 
@@ -109,11 +112,11 @@ workflow ILLUMINA_QC {
             def sid = r1.name
                 .replaceAll(/_S\d+(_L\d{3})?_R1_001\.fastq\.gz$/, '')
                 .replaceAll(/_R1_001\.fastq\.gz$/, '')
-            tuple( meta + [ id: sid, single_end: !r2.exists() ], r1, r2.exists() ? r2 : [] )
+            tuple( meta + [ id: sid, single_end: !r2.exists(), undetermined: isUndetermined( r1 ) ], r1, r2.exists() ? r2 : [] )
         }
     }
 
-    FASTQC_FASTQC( ch_pairs )
+    FASTQC_FASTQC( ch_pairs.filter { meta, _r1, _r2 -> include_undetermined || !meta.undetermined } )
     INTEROP_RUN_METRICS( ch_run )
 
     // flatMap, not map + filter: ch_run is a value channel, and filtering one
@@ -166,6 +169,7 @@ workflow ILLUMINA_QC {
         .mix( INTEROP_RUN_METRICS.out.versions_interop )
 
     emit:
+    files    = FASTQC_FASTQC.out.html.map { _meta, html -> html } // channel: path — FastQC HTML, published in qc/
     reads    = ch_pairs.map { meta, r1, r2 -> tuple( meta, [ r1, r2 ].flatten().findAll { f -> f } ) }
     qc       = ch_qc                          // channel: path — flat files for MultiQC
     metrics  = INTEROP_RUN_METRICS.out.metrics // channel: [ meta, run_metrics.csv ]
