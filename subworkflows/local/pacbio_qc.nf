@@ -20,6 +20,7 @@
 //       metadata/<movie>.transferdone                       written last
 //
 
+include { PACBIO_CELL_QC } from '../../modules/local/pacbio_cell_qc/main.nf'
 include { demuxSummary; readShareTable; demuxSummaryTable } from './demux_report.nf'
 
 // <movie>.<kind>[.<barcode>].bam, kind hifi_reads or fail_reads; barcode is
@@ -365,6 +366,27 @@ def revioCellMetrics( cell, String movie, String well_sample ) {
     ]
 }
 
+// One PACBIO_CELL_QC input per SMRT Cell in the Revio layout: [ meta, zip,
+// zmw_metrics ], meta.id the well (as the Run Metrics table names the cell)
+// and meta.samples each barcode's sample id. A missing file is [], which the
+// module skips.
+def revioCellInputs( List samples ) {
+    return samples.findAll { meta, bam -> meta.movie && revioCell( bam ) }
+        .groupBy { meta, bam -> [ meta.well, meta.movie, revioCell( bam ) ] }
+        .collect { key, rows ->
+            def movie = key[1]
+            def stats = key[2].resolve('statistics')
+            def zip   = stats.resolve("${movie}.reports.zip")
+            def zmw   = stats.resolve("${movie}.zmw_metrics.csv.gz")
+            def meta  = rows[0][0].subMap( [ 'run', 'platform' ] ) + [
+                id:      key[0],
+                samples: rows.findAll { m, _bam -> m.barcode }.collectEntries { m, _bam -> [ ( m.barcode ): m.id ] },
+            ]
+            tuple( meta, zip.exists() ? zip : [], zmw.exists() ? zmw : [] )
+        }
+        .sort { t -> t[0].id }
+}
+
 // One row per SMRT Cell, as MultiQC custom content. The run-level slot that
 // the InterOp table fills for Illumina. No loading flag yet: P1 is shown, and
 // a threshold waits for the lab to say what under-loaded means on our Revio.
@@ -512,13 +534,18 @@ workflow PACBIO_QC {
         }
         .collectFile( name: 'pacbio_sample_metrics_mqc.tsv' )
 
+    // Plots and tables from what SMRT Link's run QC report is drawn from.
+    PACBIO_CELL_QC( ch_samples.flatMap { samples -> revioCellInputs( samples ) } )
+
     ch_qc = channel.empty()
         .mix( ch_sample_metrics )
         .mix( ch_run_metrics )
         .mix( ch_read_share )
         .mix( ch_demux_summary )
+        .mix( PACBIO_CELL_QC.out.mqc )
 
     ch_versions = ch_samples.flatMap { samples -> revioSoftwareVersions( samples ) }
+        .mix( PACBIO_CELL_QC.out.versions_python )
 
     emit:
     reads    = ch_bam.mix( ch_unassigned ) // HiFi uBAM delivered unchanged, unassigned included

@@ -14,6 +14,8 @@ include { NANOPORE_QC; nanoporeUnfinished } from './subworkflows/local/nanopore_
 include { PACBIO_QC; revioUnfinishedCells } from './subworkflows/local/pacbio_qc.nf'
 include { BATCH_REPORT } from './subworkflows/local/batch_report.nf'
 include { COPY_READS   } from './modules/local/copy_reads/main.nf'
+include { BAM_CHECK    } from './modules/local/bam_check/main.nf'
+include { bamCheckRow; bamCheckWarnings; bamCheckTable } from './subworkflows/local/bam_check_report.nf'
 
 // Instrument directory names start with the brand: <brand>_<model>_<machine_ID>.
 // The platform each brand's run folder should be detected as; null for a brand
@@ -205,6 +207,8 @@ workflow {
     ch_qc       = channel.empty()
     ch_metrics  = channel.empty()
     ch_versions = channel.empty()
+    ch_check    = channel.empty() // long-read BAMs as delivered, for BAM_CHECK
+    def check_reads = 10000       // reads scanned for modified-base tags per BAM
 
     if ( platform == 'illumina' ) {
         def missing = [ 'RTAComplete.txt', 'CopyComplete.txt' ].findAll { m -> !file("${run_dir}/${m}").exists() }
@@ -231,6 +235,7 @@ workflow {
         requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
         NANOPORE_QC( ch_run, pod5_dir, flag( params.include_failed ), params.barcode_kit, params.basecall.model, max_undetermined, params.min_barcode_reads as long )
         ch_bam      = NANOPORE_QC.out.bam
+        ch_check    = NANOPORE_QC.out.bam
         ch_barcoding = NANOPORE_QC.out.barcoding
         ch_qc       = NANOPORE_QC.out.qc
         ch_versions = NANOPORE_QC.out.versions
@@ -251,12 +256,31 @@ workflow {
                 : tuple( meta, [ bam ], [ name ] )
         } )
         ch_reads    = COPY_READS.out.reads
+        ch_check    = COPY_READS.out.reads
         ch_qc       = PACBIO_QC.out.qc
         ch_versions = PACBIO_QC.out.versions
     }
     else {
         error "Unknown --platform '${platform}'. Expected one of: illumina, aviti, nanopore, pacbio."
     }
+
+    // Every delivered long-read BAM: intact (quickcheck), and which modified
+    // bases its reads carry. Unassigned / unclassified BAMs are checked and
+    // warned about, but get no General Statistics row of their own.
+    BAM_CHECK( ch_check, check_reads )
+    def expect_mods = platform == 'nanopore' && params.basecall.modified_bases as boolean
+    ch_bam_check = BAM_CHECK.out.check
+        .map { meta, tsv -> [ meta, bamCheckRow( tsv.text ) ] }
+        .toList()
+        .flatMap { checked ->
+            bamCheckWarnings( checked.collect { c -> c[1] }, expect_mods, 'BAM_CHECK' )
+            def rows  = checked.findAll { meta, _row -> !meta.unassigned && ( meta.barcode != 'unclassified' || flag( params.include_failed ) ) }
+            def table = bamCheckTable( rows.collect { c -> c[1] }, check_reads )
+            table ? [ table ] : []
+        }
+        .collectFile( name: 'bam_check_mqc.tsv' )
+    ch_qc       = ch_qc.mix( ch_bam_check )
+    ch_versions = ch_versions.mix( BAM_CHECK.out.versions_samtools )
 
     BATCH_REPORT( ch_qc, ch_versions, channel.value(run_id), multiqc_config )
 

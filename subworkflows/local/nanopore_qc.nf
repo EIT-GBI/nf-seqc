@@ -189,17 +189,58 @@ def demuxAboveCutoff( Map counts, long min_reads ) {
     return kept ? demuxSummary( kept, counts.unclassified + ( low.values().sum() ?: 0L ), [] ) : null
 }
 
+// key=value lines of an acquisition directory's final_summary, or [:].
+def acquisitionSummary( dir ) {
+    def final_summary = files("${dir}/final_summary_*.txt").find { s -> s.exists() }
+    return final_summary ? keyValues( final_summary ) : [:]
+}
+
+// Seconds an acquisition started after `first`, from final_summary's
+// started= (RFC 3339), or 0 when either is missing.
+def secondsAfter( String started, String first ) {
+    if ( !started || !first ) {
+        return 0
+    }
+    return java.time.Duration.between(
+        java.time.OffsetDateTime.parse( first ).toInstant(),
+        java.time.OffsetDateTime.parse( started ).toInstant()
+    ).seconds
+}
+
 // Every sequencing_summary_*.txt under the run folder, grouped by flow cell
-// (a restarted acquisition writes a second one), as [ flowcell, [ files ] ].
-// The flow cell id is final_summary's, as ontPod5Folders() names it.
+// (a restarted acquisition writes a second one), with the flow cell's
+// report_*.json, as [ flowcell, [ summaries ], [ reports ], [ offsets ] ].
+// offsets[i] is how many seconds summaries[i]'s acquisition started after the
+// flow cell's first one: each summary counts read times from its own start,
+// so this puts a restart after the first run on one time axis. The flow cell
+// id is final_summary's, as ontPod5Folders() names it.
 def ontSequencingSummaries( root ) {
     def summaries = ( files("${root}/**/sequencing_summary_*.txt") + files("${root}/sequencing_summary_*.txt") )
         .findAll { f -> f.exists() }
         .unique()
-    return summaries.groupBy { f ->
-        def final_summary = files("${f.parent}/final_summary_*.txt").find { s -> s.exists() }
-        ( final_summary ? keyValues( final_summary ).flow_cell_id : null ) ?: f.parent.name
-    }.collect { flowcell, fs -> [ flowcell, fs.sort() ] }
+    return summaries.groupBy { f -> acquisitionSummary( f.parent ).flow_cell_id ?: f.parent.name }
+        .collect { flowcell, fs ->
+            def sorted  = fs.sort { f -> acquisitionSummary( f.parent ).started ?: '' }
+            def starts  = sorted.collect { f -> acquisitionSummary( f.parent ).started }
+            def first   = starts.findAll { v -> v }.min()
+            def reports = sorted.collect { f -> f.parent }.unique()
+                .collectMany { d -> files("${d}/report_*.json").findAll { r -> r.exists() } }
+            [ flowcell, sorted, reports.sort(), starts.collect { v -> secondsAfter( v, first ) } ]
+        }
+}
+
+// The pipeline's sample ids per flow cell and barcode, from the samples it
+// delivers and reports ([ meta, bam ] after the --min_barcode_reads cut-off),
+// as [ flowcell: [ barcode: id ] ]. An unbarcoded flow cell's sample is under
+// 'all'. ONT_SUMMARY_STATS names its plot series with this, so they match the
+// General Statistics rows, and plots no barcode that is not a sample.
+def ontSampleIds( List samples ) {
+    def ids = [:]
+    samples.each { meta, _bam ->
+        def fc = ids.get( meta.flowcell, [:] )
+        fc[ meta.barcode ?: 'all' ] = meta.id
+    }
+    return ids
 }
 
 // MultiQC General Statistics columns, one row per sample, from each flow
@@ -515,11 +556,17 @@ workflow NANOPORE_QC {
 
     // From the run folder, not --pod5_dir: MinKNOW writes its reports next to
     // final_summary, whichever disk the POD5 were moved to.
-    ch_summaries = ch_run.flatMap { meta, run_dir ->
-        ontSequencingSummaries( run_dir ).collect { flowcell, fs ->
-            tuple( meta.subMap( [ 'run', 'platform' ] ) + [ id: flowcell, flowcell: flowcell ], fs )
+    // Each flow cell's plot series are named after the samples the pipeline
+    // reports (ch_bam), so they wait for the demux.
+    ch_sample_ids = ch_bam.toList().map { samples -> ontSampleIds( samples ) }
+    ch_summaries = ch_run
+        .flatMap { meta, run_dir ->
+            ontSequencingSummaries( run_dir ).collect { flowcell, fs, reports, offsets ->
+                tuple( meta.subMap( [ 'run', 'platform' ] ) + [ id: flowcell, flowcell: flowcell, offsets: offsets ], fs, reports )
+            }
         }
-    }
+        .combine( ch_sample_ids )
+        .map { meta, fs, reports, ids -> tuple( meta + [ samples: ids[ meta.flowcell ] ?: [:] ], fs, reports ) }
     ONT_SUMMARY_STATS( ch_summaries )
 
     ch_sample_metrics = ch_bam.toList().map { s -> [ s ] }
@@ -551,6 +598,7 @@ workflow NANOPORE_QC {
     ch_qc = channel.empty()
         .mix( ch_sample_metrics )
         .mix( ch_run_metrics )
+        .mix( ONT_SUMMARY_STATS.out.mqc )
         .mix( ch_read_share )
         .mix( ch_demux_summary )
 
