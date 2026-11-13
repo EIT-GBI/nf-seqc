@@ -50,7 +50,7 @@ else is in `qc/`:
 ├── <run>_QC.html                 AVITI only: Element's own run report
 ├── <sample>…fastq.gz             Illumina, AVITI
 ├── <sample>.bam                  Nanopore (uBAM, keeps modified-base tags)
-├── <movie>.hifi_reads.<bc>.bam   Revio, with its .pbi index
+├── <movie>.hifi_reads.<bc>.bam   Revio, with its .pbi index (+ .unassigned.bam)
 └── qc/                           FastQC (zip + HTML), the MultiQC data folder
                                   (report tables as text), MultiQC inputs, run
                                   metrics CSV, software versions, publish record;
