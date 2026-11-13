@@ -17,6 +17,10 @@ process BASES2FASTQ {
     // index-assignment sections; *_QC.html is Element's own run report.
     tuple val(meta), path("{RunStats.json,Metrics.csv,RunManifest.csv,RunManifest.json,*_QC.html}"), emit: stats, optional: true
     tuple val(meta), path("*_stats.json"), emit: sample_stats, optional: true
+    // For scientists, not MultiQC: reads and index sequences per sample, the
+    // most common unmatched index sequences, the run log, and the run-manifest
+    // settings bases2fastq assumed.
+    tuple val(meta), path("{IndexAssignment.csv,UnassignedSequences.csv,Bases2Fastq.log,RunManifestErrors.json}"), emit: run_files, optional: true
     // bases2fastq prints "bases2fastq version: 2.4.0.2499042781" (note the
     // colon); take the first version-like token after "version".
     tuple val("${task.process}"), val('bases2fastq'), eval('bases2fastq --version 2>&1 | sed -nE "s/.*version:?[[:space:]]*([0-9][^ ,]*).*/\\1/p" | head -n1'), emit: versions_bases2fastq, topic: versions
@@ -44,13 +48,17 @@ process BASES2FASTQ {
     done
     # Run-level QC report only: the per-project ones under Samples/ stay behind.
     find b2f -maxdepth 1 -name '*_QC.html' -exec mv {} . \\;
+    for m in IndexAssignment.csv UnassignedSequences.csv info/Bases2Fastq.log info/RunManifestErrors.json; do
+        if [ -f "b2f/\$m" ]; then mv "b2f/\$m" .; fi
+    done
     """
 
     stub:
     """
-    touch SAMPLE1_R1.fastq.gz SAMPLE1_R2.fastq.gz
+    touch SAMPLE1_R1.fastq.gz SAMPLE1_R2.fastq.gz PhiX_R1.fastq.gz PhiX_R2.fastq.gz Unassigned_R1.fastq.gz Unassigned_R2.fastq.gz
     touch SAMPLE1_stats.json
     touch RunStats.json Metrics.csv RunManifest.csv RunManifest.json
     touch ${meta.id}_QC.html
+    touch IndexAssignment.csv UnassignedSequences.csv Bases2Fastq.log RunManifestErrors.json
     """
 }

@@ -59,23 +59,25 @@ workflow AVITI_QC {
     ch_pairs = BASES2FASTQ.out.fastq.flatMap { meta, fastqs ->
         def files = asFileList( fastqs )
 
-        if ( !include_undetermined ) {
-            files = files.findAll { f -> !f.name.startsWith('Unassigned') }
-        }
+        // Unassigned reads are always delivered; they are QC'd (FastQC, a sample
+        // row) only with --include_undetermined.
+        // PhiX is the run's spike-in control, not a sample: no FASTQ delivered,
+        // no FastQC. Its numbers stay in bases2fastq's own reports.
+        files = files.findAll { f -> !f.name.startsWith('PhiX_') }
 
         def r1s = files.findAll { f -> f.name ==~ /.*_R1(_001)?\.fastq\.gz$/ }
-        if ( !r1s ) {
+        if ( !r1s.findAll { f -> !f.name.startsWith('Unassigned') } ) {
             error "AVITI_QC: bases2fastq produced no R1 FASTQ. Check the run manifest in ${meta.id}."
         }
 
         r1s.sort().collect { r1 ->
             def r2  = files.find { f -> f.name == r1.name.replace('_R1', '_R2') }
             def sid = r1.name.replaceAll(/_R1(_001)?\.fastq\.gz$/, '')
-            tuple( meta + [ id: sid, single_end: r2 == null ], r1, r2 ?: [] )
+            tuple( meta + [ id: sid, single_end: r2 == null, undetermined: r1.name.startsWith('Unassigned') ], r1, r2 ?: [] )
         }
     }
 
-    FASTQC_FASTQC( ch_pairs )
+    FASTQC_FASTQC( ch_pairs.filter { meta, _r1, _r2 -> include_undetermined || !meta.undetermined } )
 
     // flatMap: a missing or empty RunStats.json gives no tables rather than an error
     ch_demux = BASES2FASTQ.out.stats.flatMap { meta, stats ->
@@ -109,6 +111,9 @@ workflow AVITI_QC {
         .mix( BASES2FASTQ.out.versions_bases2fastq )
 
     emit:
+    // channel: path — published in qc/ for scientists, not read by MultiQC
+    files    = FASTQC_FASTQC.out.html.map { _meta, html -> html }
+                   .mix( BASES2FASTQ.out.run_files.map { _meta, f -> f } )
     report   = BASES2FASTQ.out.stats.map { _meta, stats -> asFileList( stats ).find { f -> isElementReport( f ) } }
                    .filter { f -> f } // channel: path — Element's <run>_QC.html
     reads    = ch_pairs.map { meta, r1, r2 -> tuple( meta, [ r1, r2 ].flatten().findAll { f -> f } ) }

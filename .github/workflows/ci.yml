@@ -88,9 +88,9 @@ jobs:
           set -euo pipefail
           out=results_${{ matrix.profile }}
           case "${{ matrix.profile }}" in
-            test)          want="illumina_run_multiqc_report.html TEST1_S1_L001_R1_001.fastq.gz qc/illumina_run.run_metrics.csv qc/TEST1_R1_fastqc.zip" ;;
-            test_aviti)    want="aviti_run_multiqc_report.html aviti_run_QC.html SAMPLE1_R1.fastq.gz qc/RunStats.json" ;;
-            test_nanopore) want="nanopore_run_multiqc_report.html sample_A.bam" ;;
+            test)          want="illumina_run_multiqc_report.html TEST1_S1_L001_R1_001.fastq.gz qc/illumina_run.run_metrics.csv qc/TEST1_R1_fastqc.zip qc/TEST1_R1_fastqc.html Undetermined_S0_L001_R1_001.fastq.gz" ;;
+            test_aviti)    want="aviti_run_multiqc_report.html aviti_run_QC.html SAMPLE1_R1.fastq.gz qc/RunStats.json qc/IndexAssignment.csv qc/UnassignedSequences.csv qc/Bases2Fastq.log qc/SAMPLE1_R1_fastqc.html Unassigned_R1.fastq.gz" ;;
+            test_nanopore) want="nanopore_run_multiqc_report.html sample_A.bam unclassified_PAW00001.bam qc/PAW00001.barcoding_summary.txt" ;;
             test_pacbio)   want="pacbio_run_multiqc_report.html m84001_240101_000000_s1.hifi_reads.bc2001.bam qc/pacbio_run_metrics_mqc.tsv" ;;
           esac
           fail=0
@@ -100,6 +100,10 @@ jobs:
           for d in reads bam multiqc metrics pipeline_info; do
             test ! -e "$out/$d" || { echo "::error::old-layout folder $out/$d"; fail=1; }
           done
+          run=$(ls "$out" | sed -n 's/_multiqc_report\.html$//p')
+          test -d "$out/qc/${run}_multiqc_report_data" || { echo "::error::missing MultiQC data folder in $out/qc"; fail=1; }
+          ! find "$out/qc" -name 'Undetermined*_fastqc*' -o -name 'Unassigned*_fastqc*' | grep -q . || { echo "::error::Undetermined/Unassigned reads were QC'd without --include_undetermined"; fail=1; }
+          ! find "$out" -name 'PhiX_*' | grep -q . || { echo "::error::PhiX published as a sample"; fail=1; }
           test ! -e "$out/qc/aviti_run_QC.html" || { echo "::error::Element report is in qc/, not at the top"; fail=1; }
           if [ "${{ matrix.profile }}" = test_nanopore ] && find "$out" -name '*.fastq.gz' | grep -q .; then
             echo "::error::Nanopore published FASTQ; it delivers BAM only"; fail=1

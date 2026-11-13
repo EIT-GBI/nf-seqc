@@ -198,6 +198,8 @@ workflow {
     ch_reads    = channel.empty()
     ch_bam      = channel.empty()
     ch_reports  = channel.empty() // instrument vendors' own HTML reports, made by the pipeline
+    ch_files    = channel.empty() // more files for scientists in qc/ that MultiQC does not read
+    ch_barcoding = channel.empty() // Nanopore: dorado's per-read barcode calls, per flow cell
     ch_qc       = channel.empty()
     ch_metrics  = channel.empty()
     ch_versions = channel.empty()
@@ -208,6 +210,7 @@ workflow {
         ILLUMINA_QC( ch_run, fastq_dir, flag( params.include_undetermined ), max_undetermined )
         // The FASTQ are the instrument's, so copy them to make them publishable.
         COPY_READS( ILLUMINA_QC.out.reads )
+        ch_files    = ILLUMINA_QC.out.files
         ch_reads    = COPY_READS.out.reads
         ch_qc       = ILLUMINA_QC.out.qc
         ch_metrics  = ILLUMINA_QC.out.metrics
@@ -217,6 +220,7 @@ workflow {
         AVITI_QC( ch_run, flag( params.include_undetermined ), max_undetermined )
         ch_reads    = AVITI_QC.out.reads
         ch_reports  = AVITI_QC.out.report
+        ch_files    = AVITI_QC.out.files
         ch_qc       = AVITI_QC.out.qc
         ch_versions = AVITI_QC.out.versions
     }
@@ -225,6 +229,7 @@ workflow {
         requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
         NANOPORE_QC( ch_run, pod5_dir, flag( params.include_failed ), params.barcode_kit, params.basecall.model, max_undetermined, params.min_barcode_reads as long )
         ch_bam      = NANOPORE_QC.out.bam
+        ch_barcoding = NANOPORE_QC.out.barcoding
         ch_qc       = NANOPORE_QC.out.qc
         ch_versions = NANOPORE_QC.out.versions
     }
@@ -262,6 +267,8 @@ workflow {
     reads    = ch_reads
     bam      = ch_bam
     qc       = ch_qc
+    qc_files = ch_files.mix( BATCH_REPORT.out.data )
+    barcoding = ch_barcoding
     metrics  = ch_metrics
     report   = BATCH_REPORT.out.report.mix( ch_reports )
     versions = BATCH_REPORT.out.versions
@@ -286,6 +293,16 @@ output {
     }
     qc {
         path 'qc'
+    }
+    // FastQC HTML, bases2fastq's index tables and log, and the MultiQC data
+    // folder (the report's tables as text).
+    qc_files {
+        path 'qc'
+    }
+    // dorado writes demux/barcoding_summary.txt in every flow cell's task;
+    // renamed so several flow cells do not overwrite each other.
+    barcoding {
+        path { meta, summary -> summary >> "qc/${meta.id}.barcoding_summary.txt" }
     }
     // One-row-per-run CSV, column-compatible with the log kept by
     // EIT-GBI/Automate-Seq-Run-Metrics-Collection so rows can be concatenated.

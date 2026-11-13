@@ -51,8 +51,13 @@ else is in `qc/`:
 ├── <sample>…fastq.gz             Illumina, AVITI
 ├── <sample>.bam                  Nanopore (uBAM, keeps modified-base tags)
 ├── <movie>.hifi_reads.<bc>.bam   Revio, with its .pbi index
-└── qc/                           FastQC, MultiQC inputs, run metrics CSV,
-                                  software versions, publish record
+└── qc/                           FastQC (zip + HTML), the MultiQC data folder
+                                  (report tables as text), MultiQC inputs, run
+                                  metrics CSV, software versions, publish record;
+                                  AVITI: bases2fastq's IndexAssignment.csv,
+                                  UnassignedSequences.csv, log, run-manifest
+                                  warnings; Nanopore: dorado's per-read barcode
+                                  calls (<flowcell>.barcoding_summary.txt)
 ```
 
 - The brand in `--instrument` (`illumina`, `element`, `oxford_nanopore`,
@@ -144,7 +149,8 @@ of each barcode's reads. So every POD5 folder is basecalled with the run's
 barcoding kit (`--kit-name`, read from `final_summary_*.txt`), and
 `dorado demux` then splits each flow cell's reads by barcode. Samples are named
 after the sample sheet's `alias`, or the barcode. Unclassified reads are counted
-in the Demultiplexing table but not delivered unless `--include_failed`.
+in the Demultiplexing table and always delivered (`unclassified_<flowcell>.bam`),
+but reported as a sample only with `--include_failed`.
 
 ### Illumina run metrics
 
@@ -189,8 +195,8 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 | `--barcode_kit` | — | Nanopore: barcoding kit (e.g. `SQK-RBK114-24`) when `final_summary` does not name one |
 | `--min_barcode_reads` | `100` | Nanopore: fewest reads for a barcode to be reported as a sample; reads of smaller barcodes count as unclassified |
 | `--bam_dir` | — | PacBio: HiFi BAM live outside the run folder |
-| `--include_undetermined` | `false` | QC the Undetermined/Unassigned reads too |
-| `--include_failed` | `false` | Nanopore: include `pod5_fail` and the unclassified reads. PacBio failed reads are always counted per barcode (hidden General Statistics column) |
+| `--include_undetermined` | `false` | Also QC the Undetermined (Illumina) / Unassigned (AVITI) reads: FastQC and a sample row. They are delivered either way |
+| `--include_failed` | `false` | Nanopore: basecall `pod5_fail` too, and report the unclassified reads as a sample (they are delivered either way). PacBio failed reads are always counted per barcode (hidden General Statistics column) |
 | `--allow_incomplete` | `false` | Report even on an unfinished run: Illumina without `RTAComplete.txt`/`CopyComplete.txt`, PacBio with a SMRT Cell lacking `metadata/*.transferdone` |
 | `--max_undetermined` | `15` | Illumina, AVITI and barcoded PacBio: flag the run as high in the Demultiplexing table, plus a log warning, above this % of Undetermined (Illumina) or Unassigned (AVITI, PacBio Not Barcoded) reads |
 | `--basecall.model` | baked-in `sup@v5.0.0` | dorado model path inside the container |
