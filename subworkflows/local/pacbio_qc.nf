@@ -477,15 +477,15 @@ workflow PACBIO_QC {
 
     ch_bam = ch_samples.flatMap { samples -> samples }
 
-    // Reads lima could not assign to a barcode: delivered with the samples
-    // (instrument file name kept), but not a sample and not QC'd.
+    // Reads lima could not assign to a barcode: delivered with the samples as
+    // unassigned_<well>.hifi_reads.bam, but not a sample and not QC'd.
     ch_unassigned = ch_run.flatMap { meta, run_dir ->
         def root = bam_dir ?: run_dir
         ( files("${root}/**/*.hifi_reads.unassigned.bam") + files("${root}/*.hifi_reads.unassigned.bam") )
             .findAll { f -> f.exists() }
             .unique()
             .sort()
-            .collect { bam -> tuple( meta + [ id: safeId( bam.name - ~/\.bam$/ ), unassigned: true ], bam ) }
+            .collect { bam -> tuple( meta + [ id: "unassigned_${revioCell( bam )?.name ?: revioBamName( bam )?.movie ?: 'cell'}".toString(), unassigned: true ], bam ) }
     }
 
     // flatMap, not map + filter: ch_samples is a value channel (see ILLUMINA_QC).

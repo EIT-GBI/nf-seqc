@@ -209,7 +209,7 @@ workflow {
         requireRunComplete( run_id, missing, flag( params.allow_incomplete ) )
         ILLUMINA_QC( ch_run, fastq_dir, flag( params.include_undetermined ), max_undetermined )
         // The FASTQ are the instrument's, so copy them to make them publishable.
-        COPY_READS( ILLUMINA_QC.out.reads )
+        COPY_READS( ILLUMINA_QC.out.reads.map { meta, fastqs -> tuple( meta, fastqs, fastqs.collect { f -> f.name } ) } )
         ch_files    = ILLUMINA_QC.out.files
         ch_reads    = COPY_READS.out.reads
         ch_qc       = ILLUMINA_QC.out.qc
@@ -238,10 +238,15 @@ workflow {
         requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
         PACBIO_QC( ch_run, bam_dir, max_undetermined )
         // The HiFi BAM are the instrument's, so copy them to make them
-        // publishable, with their PacBio index (.bam.pbi) where there is one.
+        // publishable, with their PacBio index (.bam.pbi) where there is one,
+        // renamed after the sample: <sample>.hifi_reads.bam. The instrument's
+        // names (<movie>.hifi_reads.<barcode>.bam) stay in the prep zone.
         COPY_READS( PACBIO_QC.out.reads.map { meta, bam ->
-            def pbi = file( "${bam}.pbi" )
-            tuple( meta, pbi.exists() ? [ bam, pbi ] : [ bam ] )
+            def pbi  = file( "${bam}.pbi" )
+            def name = "${meta.id}.hifi_reads.bam".toString()
+            pbi.exists()
+                ? tuple( meta, [ bam, pbi ], [ name, "${name}.pbi".toString() ] )
+                : tuple( meta, [ bam ], [ name ] )
         } )
         ch_reads    = COPY_READS.out.reads
         ch_qc       = PACBIO_QC.out.qc

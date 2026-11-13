@@ -91,7 +91,7 @@ jobs:
             test)          want="illumina_run_multiqc_report.html TEST1_S1_L001_R1_001.fastq.gz qc/illumina_run.run_metrics.csv qc/TEST1_R1_fastqc.zip qc/TEST1_R1_fastqc.html Undetermined_S0_L001_R1_001.fastq.gz" ;;
             test_aviti)    want="aviti_run_multiqc_report.html aviti_run_QC.html SAMPLE1_R1.fastq.gz qc/RunStats.json qc/IndexAssignment.csv qc/UnassignedSequences.csv qc/Bases2Fastq.log qc/SAMPLE1_R1_fastqc.html Unassigned_R1.fastq.gz" ;;
             test_nanopore) want="nanopore_run_multiqc_report.html sample_A.bam unclassified_PAW00001.bam qc/PAW00001.barcoding_summary.txt" ;;
-            test_pacbio)   want="pacbio_run_multiqc_report.html m84001_240101_000000_s1.hifi_reads.bc2001.bam m84001_240101_000000_s1.hifi_reads.unassigned.bam qc/pacbio_run_metrics_mqc.tsv" ;;
+            test_pacbio)   want="pacbio_run_multiqc_report.html sample_2.hifi_reads.bam unassigned_1_A01.hifi_reads.bam qc/pacbio_run_metrics_mqc.tsv" ;;
           esac
           fail=0
           for f in $want qc/software_versions.yml qc/nf-seqc_session.txt; do
