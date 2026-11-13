@@ -44,9 +44,11 @@ destination. `--input <run_dir>` still takes any run folder, publishing to
 - The brand in `--instrument` (`illumina`, `element`, `oxford_nanopore`,
   `pacbio`) must match the platform detected from the run's files, or the run
   stops before any task.
-- A run is published once. If the destination already has files, the run
-  stops, unless it is a `-resume` of the run that wrote them or
-  `--overwrite` is given. `--overwrite` writes over files of the same name; it
+- A run is published once. The first launch records its session ID in
+  `pipeline_info/nf-seqc_session.txt`. If the destination already has files,
+  the run stops, unless it is `-resume <that session ID>` (the error names it)
+  or `--overwrite` is given. Two launches of the same run at once: only one
+  gets past the start. `--overwrite` writes over files of the same name; it
   does not remove files from an earlier run.
 - Results are **copied**, since the destination is another filesystem from
   `work/`. Illumina FASTQ and Revio HiFi BAM (with `.pbi`) are copied into a

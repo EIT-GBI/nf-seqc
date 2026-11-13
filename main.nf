@@ -25,8 +25,8 @@ def instrumentPlatform( String instrument ) {
 
 // The run directory named by --instrument/--run. nextflow.config has already
 // looked under every <prep_root>/<instrument>/<YYYY>/ for it (it builds the
-// output path from the year) and left every match in params.input, separated
-// by commas; here that becomes exactly one directory or a clear error.
+// output path from the year) and left every match in params.run_matches,
+// separated by commas; here that becomes exactly one directory or a clear error.
 def resolveRun( String instrument, String run, String prep_root, String found ) {
     def machine_dir = file( "${prep_root}/${instrument}" )
     if ( !machine_dir.isDirectory() ) {
@@ -43,17 +43,37 @@ def resolveRun( String instrument, String run, String prep_root, String found ) 
     return file( matches[0] )
 }
 
-// A run is published once. Refuse an output directory that already holds
-// files, unless this is a -resume of the run that wrote them or --overwrite
-// says so: a second, separate run would otherwise mix its results in.
-def requireEmptyOutput( out, boolean resuming, boolean overwrite ) {
-    if ( !out.exists() || !out.list() || resuming ) {
+// A run is published once. The first launch claims the output directory by
+// creating pipeline_info/nf-seqc_session.txt, holding its session ID, before any
+// task runs. A later launch into a directory with files in it is refused unless
+// it is a -resume of that same session (Nextflow keeps the session ID on
+// -resume; a bare -resume takes the last launch's, which after a refused
+// launch is the wrong one, so the error names it) or --overwrite is given. The claim file is created atomically, so of
+// two launches that both find the directory empty, only one proceeds.
+def claimOutput( out, String session, boolean resuming, boolean overwrite ) {
+    def claim = out.resolve( 'pipeline_info/nf-seqc_session.txt' )
+    def owner = claim.exists() ? claim.text.trim() : null
+    if ( resuming && owner == session ) {
         return
     }
-    if ( !overwrite ) {
-        error "Output directory ${out} already has results. Pass -resume to continue the run that wrote them, or --overwrite to write over them."
+    if ( out.exists() && out.list() ) {
+        if ( !overwrite ) {
+            def resume = owner ? "-resume ${owner} to continue the session that wrote them" : '-resume <session> to continue the session that wrote them'
+            error "Output directory ${out} already has results. Pass ${resume}, or --overwrite to write over them."
+        }
+        log.warn "Writing over the results already in ${out} (--overwrite was set)."
+        claim.parent.mkdirs()
+        claim.text = "${session}\n"
+        return
     }
-    log.warn "Writing over the results already in ${out} (--overwrite was set)."
+    claim.parent.mkdirs()
+    try {
+        java.nio.file.Files.createFile( claim )
+    }
+    catch ( java.nio.file.FileAlreadyExistsException _e ) {
+        error "Output directory ${out} was claimed by another launch while this one was starting (${claim}). Is the same run being processed twice?"
+    }
+    claim.text = "${session}\n"
 }
 
 // Entries under a run directory matching a glob. `**/` requires at least one
@@ -121,10 +141,7 @@ workflow {
     if ( by_name && !( params.instrument && params.run ) ) {
         error "--instrument and --run go together: --instrument <brand>_<model>_<machine_ID> --run <run folder>."
     }
-    // nextflow.config fills params.input from --instrument/--run, but a
-    // --input on the command line overrides that, so a path here that is not
-    // under the instrument's directory came from the user.
-    if ( by_name && params.input && !params.input.toString().startsWith( "${params.prep_root}/${params.instrument}/" ) ) {
+    if ( by_name && params.input ) {
         error "Give either --input or --instrument/--run, not both."
     }
     if ( !by_name && !params.input ) {
@@ -132,7 +149,7 @@ workflow {
     }
 
     def run_dir = by_name
-        ? resolveRun( params.instrument, params.run, params.prep_root, params.input )
+        ? resolveRun( params.instrument, params.run, params.prep_root, params.run_matches )
         : file( params.input, checkIfExists: true )
     def platform = params.platform ?: detectPlatform( run_dir )
     def run_id   = params.run_id ?: run_dir.name
@@ -150,7 +167,7 @@ workflow {
         }
     }
 
-    requireEmptyOutput( workflow.outputDir, workflow.resume, flag( params.overwrite ) )
+    claimOutput( workflow.outputDir, workflow.sessionId.toString(), workflow.resume, flag( params.overwrite ) )
 
     log.info "nf-seqc: run '${run_id}' on platform '${platform}'"
     log.info "nf-seqc: reading ${run_dir}"
