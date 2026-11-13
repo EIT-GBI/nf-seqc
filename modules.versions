@@ -9,7 +9,6 @@
 # The version-tag must match a published release tag in that repo (e.g. v1.2.3).
 
 nf-mod-fastqc=3.0.0
-nf-mod-samtools=1.0.0
 nf-mod-interop=1.3.0
 nf-mod-dorado=1.0.0
 

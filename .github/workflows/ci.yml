@@ -80,6 +80,32 @@ jobs:
         if: matrix.profile != 'test_publish'
         run: nextflow run . -profile ${{ matrix.profile }} -stub-run --outdir results_${{ matrix.profile }}
 
+      # The agreed run-folder layout ("option C"): reports and reads at the
+      # top, everything else in qc/, and none of the old subfolders.
+      - name: Check run-folder layout
+        if: matrix.profile != 'test_publish'
+        run: |
+          set -euo pipefail
+          out=results_${{ matrix.profile }}
+          case "${{ matrix.profile }}" in
+            test)          want="illumina_run_multiqc_report.html TEST1_S1_L001_R1_001.fastq.gz qc/illumina_run.run_metrics.csv qc/TEST1_R1_fastqc.zip" ;;
+            test_aviti)    want="aviti_run_multiqc_report.html aviti_run_QC.html SAMPLE1_R1.fastq.gz qc/RunStats.json" ;;
+            test_nanopore) want="nanopore_run_multiqc_report.html sample_A.bam" ;;
+            test_pacbio)   want="pacbio_run_multiqc_report.html m84001_240101_000000_s1.hifi_reads.bc2001.bam qc/pacbio_run_metrics_mqc.tsv" ;;
+          esac
+          fail=0
+          for f in $want qc/software_versions.yml qc/nf-seqc_session.txt; do
+            test -f "$out/$f" || { echo "::error::missing $out/$f"; fail=1; }
+          done
+          for d in reads bam multiqc metrics pipeline_info; do
+            test ! -e "$out/$d" || { echo "::error::old-layout folder $out/$d"; fail=1; }
+          done
+          test ! -e "$out/qc/aviti_run_QC.html" || { echo "::error::Element report is in qc/, not at the top"; fail=1; }
+          if [ "${{ matrix.profile }}" = test_nanopore ] && find "$out" -name '*.fastq.gz' | grep -q .; then
+            echo "::error::Nanopore published FASTQ; it delivers BAM only"; fail=1
+          fi
+          [ "$fail" = 0 ] || { find "$out" | sort; exit 1; }
+
       # No --outdir here: it would win over the path built from
       # <publish_root>/<instrument>/<YYYY>/<run>, which is what this job tests.
       - name: Stub run (mirrored publish path)

@@ -4,9 +4,6 @@
 [submodule "modules/dorado"]
 	path = modules/dorado
 	url = https://github.com/EIT-GBI/nf-mod-dorado.git
-[submodule "modules/samtools"]
-	path = modules/samtools
-	url = https://github.com/EIT-GBI/nf-mod-samtools.git
 [submodule "modules/interop"]
 	path = modules/interop
 	url = https://github.com/EIT-GBI/nf-mod-interop.git

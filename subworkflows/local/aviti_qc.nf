@@ -10,16 +10,16 @@ include { BASES2FASTQ   } from '../../modules/local/bases2fastq/main.nf'
 include { FASTQC_FASTQC } from '../../modules/fastqc/fastqc/main.nf'
 include { demuxSummary; barcodeName; readShareTable; demuxSummaryTable; unknownBarcodesTable } from './demux_report.nf'
 
-// A process output declared as path("*.x") is a single Path when one file
-// matches and a List when several do. `[] + path` does NOT wrap a single Path:
-// Path is Iterable over its directory components, so it yields every parent
-// directory (home, runner, work, ...) as if it were a file. Wrap explicitly.
 // Element's own run QC report (<run>_QC.html): published next to the MultiQC
 // report rather than with the QC files, because scientists open it directly.
 def isElementReport( f ) {
     return f.name.endsWith('_QC.html')
 }
 
+// A process output declared as path("*.x") is a single Path when one file
+// matches and a List when several do. `[] + path` does NOT wrap a single Path:
+// Path is Iterable over its directory components, so it yields every parent
+// directory (home, runner, work, ...) as if it were a file. Wrap explicitly.
 def asFileList( files ) {
     return files instanceof List ? files : [ files ]
 }

@@ -51,7 +51,15 @@ def resolveRun( String instrument, String run, String prep_root, String found ) 
 // launch is the wrong one, so the error names it) or --overwrite is given.
 // The claim file is created atomically, so of two launches that both find the
 // directory empty, only one proceeds.
+//
+// A folder published before the option C layout (reads/, multiqc/, ...) is
+// refused outright, even with -resume or --overwrite: either would add the new
+// layout beside the old one and leave every read file there twice.
 def claimOutput( out, String session, boolean resuming, boolean overwrite ) {
+    def old_layout = [ 'reads', 'bam', 'multiqc', 'metrics', 'pipeline_info' ].findAll { d -> out.resolve( d ).isDirectory() }
+    if ( old_layout ) {
+        error "Output directory ${out} was published in the old layout (${old_layout.collect { d -> "${d}/" }.join(', ')}). Move or remove it before publishing this run again."
+    }
     def claim = out.resolve( 'qc/nf-seqc_session.txt' )
     def owner = claim.exists() ? claim.text.trim() : null
     if ( resuming && owner == session ) {
