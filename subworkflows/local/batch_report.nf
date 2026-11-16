@@ -17,7 +17,7 @@ workflow BATCH_REPORT {
 
     main:
     // The pipeline's own version always heads the list. It also keeps the file
-    // from being empty: a PacBio run runs no tool before MultiQC, and with no
+    // from being empty, whatever ran before MultiQC: with no
     // software_versions.yml MultiQC would never start.
     ch_software_versions = ch_versions
         .mix( channel.of( tuple( 'NF_SEQC', 'nf-seqc', workflow.manifest.version ) ) )

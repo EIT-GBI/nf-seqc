@@ -141,8 +141,8 @@ with `--platform illumina|aviti|nanopore|pacbio`.
 | --- | --- | --- | --- |
 | Illumina NextSeq | `RunInfo.xml` | already demultiplexed on-instrument, left in place | FastQC + InterOp run metrics (see below) + BCL Convert demultiplexing reports |
 | Element AVITI | `RunParameters.json` | `bases2fastq` writes FASTQ in the pipeline | FastQC + RunStats/Metrics |
-| ONT PromethION P24 | `final_summary_*.txt`, `*.pod5` | `dorado` basecalls on **GPU** to uBAM and demultiplexes; uBAM delivered, no FASTQ | per-sample reads, yield, N50 and median Q from MinKNOW's `sequencing_summary_*.txt` (its live basecalls, no BAM is read) + per-flow-cell run metrics from MinKNOW's `report_*.json` (pore scans, occupancy, live yield and N50) + barcode counts from the pipeline's demux |
-| PacBio Revio | `<well>/pb_formats/*.consensusreadset.xml`, `<well>/hifi_reads/*.hifi_reads*.bam` | HiFi uBAM already final, left in place | read from the instrument's own reports, no BAM is read: per-sample HiFi reads, yield, length, QV and barcode quality (`barcodes.report.json`) + per-SMRT-Cell run metrics (P0/P1/P2, HiFi yield, N50, QV) + lima barcode counts |
+| ONT PromethION P24 | `final_summary_*.txt`, `*.pod5` | `dorado` basecalls on **GPU** to uBAM and demultiplexes; uBAM delivered, no FASTQ | per-sample reads, yield, N50 and median Q from MinKNOW's `sequencing_summary_*.txt` (its live basecalls, no BAM is read) + per-flow-cell run metrics from MinKNOW's `report_*.json` (pore scans, occupancy, live yield and N50) + barcode counts from the pipeline's demux + **Nanopore flow cell** plots (pore activity, occupancy, active channels, Q over time, temperature, bias voltage, MinKNOW warnings) and **Nanopore reads** plots per sample (pass/fail, yield over time, read length, yield by length, Q-score, Q by length, translocation speed, end reasons, barcode score) |
+| PacBio Revio | `<well>/pb_formats/*.consensusreadset.xml`, `<well>/hifi_reads/*.hifi_reads*.bam` | HiFi uBAM already final, left in place | read from the instrument's own reports, no BAM is read: per-sample HiFi reads, yield, length, QV and barcode quality (`barcodes.report.json`) + per-SMRT-Cell run metrics (P0/P1/P2, HiFi yield, N50, QV) + lima barcode counts + **PacBio SMRT Cell** plots from `reports.zip` (details table: polymerase, insert, CCS and control figures; loading; polymerase read length; base modifications) and **PacBio HiFi reads** plots from `zmw_metrics.csv.gz` and pbreports' binned barcode data (length, yield by length, quality, quality by length, passes; length and barcode quality per sample) |
 
 MinKNOW does not split POD5 cleanly by barcode: `pod5_pass/mixed/` holds part
 of each barcode's reads. So every POD5 folder is basecalled with the run's
@@ -200,7 +200,7 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 | `--allow_incomplete` | `false` | Report even on an unfinished run: Illumina without `RTAComplete.txt`/`CopyComplete.txt`, PacBio with a SMRT Cell lacking `metadata/*.transferdone` |
 | `--max_undetermined` | `15` | Illumina, AVITI and barcoded PacBio: flag the run as high in the Demultiplexing table, plus a log warning, above this % of Undetermined (Illumina) or Unassigned (AVITI, PacBio Not Barcoded) reads |
 | `--basecall.model` | baked-in `sup@v5.0.0` | dorado model path inside the container |
-| `--basecall.modified_bases` | `null` | e.g. `5mCG_5hmCG` to emit MM/ML tags |
+| `--basecall.modified_bases` | `null` | e.g. `5mCG_5hmCG`, `6mA` or `4mC_5mC` (the models in the dorado image) to emit MM/ML tags. Off by default, so delivered BAMs carry **no** modification calls unless asked: an m6A assay such as DiMeLo-seq needs `6mA`. The BAM check columns in General Statistics show what the reads carry, and the log warns when calls were requested but are missing |
 | `--multiqc_config` | — | extra MultiQC config, applied on top of `assets/multiqc_config.yml` (report order, and hides bases2fastq plots FastQC already shows) |
 
 ## Layout
@@ -208,7 +208,7 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 - `main.nf` — platform detection, dispatch, and the `output {}` publish targets
 - `subworkflows/local/` — one subworkflow per platform, plus `batch_report.nf`
 - `modules/<tool>/` — git submodules from `nf-mod-*` repos
-- `modules/local/` — tools with no `nf-mod-*` repo yet (bases2fastq, multiqc, ont_summary_stats)
+- `modules/local/` — tools with no `nf-mod-*` repo yet (bases2fastq, multiqc, ont_summary_stats, pacbio_cell_qc, bam_check)
 - `conf/` — `base.config` (resources), `test.config`. Container images are set in
   `nextflow.config`: each released module's `conf/module.config` is included, and
   local-module images are pinned in its `process {}` block. Nothing uses `:latest`
