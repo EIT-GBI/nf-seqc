@@ -9,7 +9,9 @@
 // plot series match General Statistics and only reported samples are
 // plotted. meta.offsets gives, per summary, how many seconds its acquisition
 // started after the flow cell's first, so a restart follows it on the time
-// axis.
+// axis. meta.prefix_rows (a run with several flow cells) names the over-time
+// bar rows after the flow cell too, so the flow cells' rows do not overwrite
+// each other in MultiQC.
 //
 // Local module — nanopore-specific and pipeline-shaped; promote to an nf-mod
 // repo only if another pipeline needs it. Publishing is handled by the
@@ -37,12 +39,13 @@ process ONT_SUMMARY_STATS {
     def samples = groovy.json.JsonOutput.toJson( meta.samples ?: [:] )
     def offsets = ( meta.offsets ?: [] ).collect { o -> "--offset ${o}" }.join(' ')
     def report  = ( reports instanceof List ? reports : [ reports ] ).findAll { r -> r }.collect { r -> "--report ${r}" }.join(' ')
+    def prefix  = meta.prefix_rows ? '--prefix-rows' : ''
     """
     ont_summary_stats.py \\
         -o ${meta.id}.summary_stats.tsv \\
         --flowcell ${shellQuote( meta.flowcell )} \\
         --samples ${shellQuote( samples )} \\
-        --mqc-dir . \\
+        --mqc-dir . ${prefix} \\
         ${offsets} ${report} \\
         ${summaries}
     """

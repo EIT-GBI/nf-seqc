@@ -27,6 +27,11 @@ Writes:
   MultiQC merges only the data, keeping the last file's settings, so nothing
   but the data may depend on the flow cell (no per-file category lists or
   colours), and no plot has several datasets (only the last file's survive).
+  The over-time bar charts (pore activity, occupancy, active channels) have
+  one row per time bucket, so with several flow cells in a run their rows are
+  named after the flow cell too (--prefix-rows), or one flow cell's would
+  overwrite another's. MultiQC draws bars horizontally only, so time runs
+  down the page.
 """
 
 import argparse
@@ -47,7 +52,8 @@ COLUMNS = ["barcode", "pass_reads", "fail_reads", "pass_bases", "mean_length", "
 # enough for a smooth curve, a few hundred points per sample at most.
 LEN_BINS_PER_DECADE = 20
 YIELD_BIN_S = 900          # yield over time: 15-minute bins
-TIME_BIN_S = 3600          # Q-score and active channels over time: 1 h bins
+TIME_BIN_S = 3600          # Q-score over time: 1 h bins
+CHANNEL_BIN_S = 7200       # active channels over time: 2 h bins, as MinKNOW's pore-activity buckets
 BIAS_BIN_S = 600           # bias voltage: 10-minute steps
 
 # MinKNOW's channel-state groups and colours, as in its own pore activity plot.
@@ -57,6 +63,10 @@ STATE_GROUPS = {
     "recovering": ("Recovering", "#f7b538"),
     "inactive": ("Inactive", "#8e8e8e"),
     "unclassified": ("Unclassified", "#d1d1d1"),
+    # Any group MinKNOW names that is not above (a newer MinKNOW may add or
+    # rename one). The pore-activity bars take a fixed category list, so it is
+    # pooled here rather than dropped, and each bar still adds up to 100%.
+    "other": ("Other states", "#5b4a8b"),
 }
 DEFAULT_STATE_GROUP = {
     "strand": "sequencing", "adapter": "sequencing", "pore": "pore",
@@ -226,11 +236,23 @@ def as_pairs(section_dict):
         }
     return section_dict
 
+def hours_label(h0, h1):
+    """A time bucket as a row label, e.g. '0-2 h'."""
+    def fmt(h):
+        return f"{h:.0f}" if abs(h - round(h)) < 0.05 else f"{h:.1f}"
+    return f"{fmt(h0)}-{fmt(h1)} h"
+
+
+def over_time_pconfig(ylab, **extra):
+    """Bars over time: one row per time bucket, top to bottom in time order."""
+    return {"ylab": ylab, "xlab": "Hours", "cpswitch": False, "sort_samples": False, "ymin": 0, **extra}
+
+
 def pct(counter, total):
     return {k: 100.0 * v / total for k, v in sorted(counter.items())} if total else {}
 
 
-def summary_sections(samples, per_flowcell, flowcell, start_s):
+def summary_sections(samples, per_flowcell, flowcell, start_s, prefix=""):
     """Sections drawn from sequencing_summary. samples: name -> Stats."""
     out = []
     named = {n: s for n, s in samples.items() if s.pass_reads + s.fail_reads}
@@ -336,12 +358,23 @@ def summary_sections(samples, per_flowcell, flowcell, start_s):
             {"xlab": "Hours", "ylab": "Median Q-score", "xmin": 0},
         ))
     if fc["channels"]:
+        # Hourly channel sets pooled into 2 h buckets. Both count from the
+        # acquisition's start (sequencing_summary start_time is relative to it),
+        # as MinKNOW's pore-activity buckets do; counting from the first read
+        # instead would shift every boundary by up to an hour.
+        buckets = collections.defaultdict(set)
+        for t, c in fc["channels"].items():
+            buckets[int(t * TIME_BIN_S // CHANNEL_BIN_S)] |= c
+        step = CHANNEL_BIN_S / 3600
         out.append(section(
             "ont_active_channels", "Active channels over time",
-            "Channels that produced at least one read in each hour of sequencing, per flow cell.",
-            "linegraph",
-            {flowcell: {bin_hours(t, start_s): len(c) for t, c in sorted(fc["channels"].items())}},
-            {"xlab": "Hours", "ylab": "Channels", "ymin": 0, "xmin": 0},
+            f"Channels that produced at least one read in each {step:g} h of sequencing, per flow cell, from "
+            "sequencing_summary.",
+            "bargraph",
+            {f"{prefix}{hours_label(b * step, (b + 1) * step)}": {"channels": len(buckets.get(b, ()))}
+             for b in range(min(buckets), max(buckets) + 1)},
+            over_time_pconfig("Channels"),
+            categories={"channels": {"name": "Active channels", "color": "#00a651"}},
         ))
     return out
 
@@ -379,7 +412,7 @@ def parse_time(stamp):
         return None
 
 
-def report_sections(reports, flowcell):
+def report_sections(reports, flowcell, prefix_rows=False):
     """Sections drawn from MinKNOW's report_*.json: one series per sequencing
     acquisition (a restarted flow cell has two, suffixed with the protocol run)."""
     acquisitions = []
@@ -416,24 +449,29 @@ def report_sections(reports, flowcell):
         duty = (acq.get("duty_time") or [{}])[0]
         buckets = duty.get("bucket_ranges") or []
         hours = [shift + ((b.get("start") or 0) + (b.get("end") or 0)) / 2 / 3600 for b in buckets]
+        prefix = f"{name} " if multi or prefix_rows else ""
+        rows = [f"{prefix}{hours_label(shift + (b.get('start') or 0) / 3600, shift + (b.get('end') or 0) / 3600)}"
+                for b in buckets]
 
         by_group = collections.defaultdict(lambda: [0.0] * len(buckets))
         for state, v in (duty.get("channel_states") or {}).items():
             group = groups.get(state) or DEFAULT_STATE_GROUP.get(state, "inactive")
+            if group not in STATE_GROUPS:
+                group = "other"
             for i, t in enumerate(v.get("state_times") or []):
                 if i < len(buckets):
                     by_group[group][i] += float(t or 0)
         bucket_total = [sum(by_group[g][i] for g in by_group) for i in range(len(buckets))]
         run_total = sum(bucket_total)
         totals[name] = {g: 100.0 * sum(by_group[g]) / run_total for g in by_group} if run_total else {}
-        for g, values in by_group.items():
-            label = STATE_GROUPS.get(g, (g, None))[0]
-            activity[f"{name}: {label}"] = {
-                round(hours[i], 2): 100.0 * values[i] / bucket_total[i] for i in range(len(buckets)) if bucket_total[i]
-            }
+        for i in range(len(buckets)):
+            if bucket_total[i]:
+                activity[rows[i]] = {g: 100.0 * values[i] / bucket_total[i] for g, values in by_group.items()}
 
         occ = duty.get("pore_occupancy") or []
-        occupancy[name] = {round(hours[i], 2): 100.0 * float(v) for i, v in enumerate(occ) if v is not None and i < len(hours)}
+        for i, v in enumerate(occ):
+            if v is not None and i < len(rows):
+                occupancy[rows[i]] = {"occupancy": 100.0 * float(v)}
 
         temps = ((acq.get("temperature") or [{}])[0]).get("temperatures") or []
         temperature[name] = {}
@@ -491,18 +529,20 @@ def report_sections(reports, flowcell):
         section(
             "ont_pore_activity", "Pore activity over time",
             "Share of channel time in each MinKNOW channel-state group, per time bucket of the run (MinKNOW's own "
-            "buckets, usually 2 h). Sequencing falling while Inactive rises is pores dying; Pore available rising "
-            "with Sequencing falling is the library running out.",
-            "linegraph",
+            "buckets, usually 2 h), as MinKNOW's stacked bars. Sequencing falling while Inactive rises is pores "
+            "dying; Pore available rising with Sequencing falling is the library running out.",
+            "bargraph",
             activity,
-            {"xlab": "Hours", "ylab": "% of channel time", "ymin": 0, "ymax": 100, "xmin": 0},
+            over_time_pconfig("% of channel time", stacking="normal", ymax=100),
+            categories={g: {"name": STATE_GROUPS.get(g, (g,))[0], "color": STATE_GROUPS.get(g, (g, None))[1]} for g in states},
         ),
         section(
             "ont_pore_occupancy", "Pore occupancy",
             "Share of available pores that were sequencing (strand + adapter), per time bucket, from report_*.json.",
-            "linegraph",
+            "bargraph",
             occupancy,
-            {"xlab": "Hours", "ylab": "Pore occupancy (%)", "ymin": 0, "ymax": 100, "xmin": 0},
+            over_time_pconfig("Pore occupancy (%)", ymax=100),
+            categories={"occupancy": {"name": "Pore occupancy", "color": "#00a651"}},
         ),
     ]
     if any(temperature.values()):
@@ -555,6 +595,8 @@ def main():
                              "Only these are plotted, under these names; {} plots none. Without --samples every barcode is plotted "
                              "under its own name")
     parser.add_argument("--mqc-dir", help="write MultiQC custom-content JSON here")
+    parser.add_argument("--prefix-rows", action="store_true",
+                        help="name the over-time bar rows after the flow cell too (a run with several flow cells)")
     args = parser.parse_args()
 
     # None: no --samples, plot every barcode under its own name (standalone use).
@@ -621,8 +663,9 @@ def main():
     else:
         samples = {args.flowcell: everything}
 
-    sections = summary_sections(samples, {"q_time": q_time, "channels": channels}, args.flowcell, start_s or 0)
-    sections += report_sections(args.report, args.flowcell)
+    prefix = f"{args.flowcell} " if args.prefix_rows else ""
+    sections = summary_sections(samples, {"q_time": q_time, "channels": channels}, args.flowcell, start_s or 0, prefix)
+    sections += report_sections(args.report, args.flowcell, args.prefix_rows)
     for s in sections:
         if not s["data"]:
             continue

@@ -24,6 +24,19 @@ table_sample_merge:
   "R1": "_R1"
   "R2": "_R2"
 
+# Read counts as exact numbers rather than millions (MultiQC's default, which
+# showed small samples as "0.0M"; lab feedback 2026-11-16). Applies to every
+# module's read-count columns; FastQC's Seqs column is given whole numbers.
+# Modules put read_count_desc in brackets in their column tooltips, e.g.
+# "Total sequences (number of reads)", so it cannot be empty.
+read_count_multiplier: 1
+read_count_prefix: ""
+read_count_desc: "number of reads"
+custom_table_header_config:
+  general_stats_table:
+    total_sequences:
+      format: "{:,.0f}"
+
 # BCL Convert names FASTQ <sample>_S<n>[_L<lane>]_R1_001.fastq.gz, so FastQC
 # rows come out as "<sample>_S1_L001" while the read-share column (from
 # Demultiplex_Stats.csv) is keyed on "<sample>". Strip the suffix so the two
