@@ -37,6 +37,13 @@ The pipeline finds the year directory itself and publishes the MultiQC report,
 QC files and reads to the same path under `/mnt/instrument-data/sequencing/`,
 where scientists read them:
 `/mnt/instrument-data/sequencing/pacbio_revio_84334/2026/r84334_20260817_141703/`.
+
+> **For now the default is `/mnt/lustre/users/$USER/nf-seqc-results/`.** Only the
+> Prefect deployment can write to `/mnt/instrument-data/sequencing`, so until
+> the pipeline runs under Prefect, results land in the launching user's Lustre
+> space with the same `<instrument>/<YYYY>/<run>` layout. Pass
+> `--publish_root /mnt/instrument-data/sequencing` from an account that can
+> write there.
 The roots are `--prep_root` and `--publish_root`; `--outdir` overrides the
 destination. `--input <run_dir>` still takes any run folder, publishing to
 `--outdir` (default `results`).
@@ -190,7 +197,7 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 | `--instrument` | — | instrument directory, `<brand>_<model>_<machine_ID>`; with `--run` |
 | `--run` | — | run folder name, looked up under `<prep_root>/<instrument>/<YYYY>/` |
 | `--prep_root` | `/mnt/instrument-prep-zone/sequencing` | where instruments write runs |
-| `--publish_root` | `/mnt/instrument-data/sequencing` | where `--instrument`/`--run` results are published |
+| `--publish_root` | `/mnt/lustre/users/$USER/nf-seqc-results` (temporary; production: `/mnt/instrument-data/sequencing`) | where `--instrument`/`--run` results are published |
 | `--input` | — | run directory, instead of `--instrument`/`--run` |
 | `--outdir` | `<publish_root>/<instrument>/<YYYY>/<run>`, or `results` with `--input` | output directory |
 | `--overwrite` | `false` | publish into a destination that already has results |
