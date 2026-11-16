@@ -30,7 +30,7 @@ process ONT_SUMMARY_STATS {
 
     output:
     tuple val(meta), path("${meta.id}.summary_stats.tsv"), emit: stats
-    path "mqc/*_mqc.json", emit: mqc, optional: true
+    path "*_mqc.json", emit: mqc, optional: true
     tuple val("${task.process}"), val('python'), eval('python3 --version | sed "s/^Python //"'), emit: versions_python, topic: versions
 
     script:
@@ -42,7 +42,7 @@ process ONT_SUMMARY_STATS {
         -o ${meta.id}.summary_stats.tsv \\
         --flowcell ${shellQuote( meta.flowcell )} \\
         --samples ${shellQuote( samples )} \\
-        --mqc-dir mqc \\
+        --mqc-dir . \\
         ${offsets} ${report} \\
         ${summaries}
     """
@@ -54,7 +54,6 @@ process ONT_SUMMARY_STATS {
     printf 'barcode02\\t2000\\t80\\t8000000\\t4000\\t7000\\t19.0\\n' >> ${meta.id}.summary_stats.tsv
     printf 'unclassified\\t100\\t300\\t200000\\t2000\\t3000\\t12.0\\n' >> ${meta.id}.summary_stats.tsv
     printf 'all\\t3100\\t430\\t13200000\\t4258\\t7500\\t18.7\\n' >> ${meta.id}.summary_stats.tsv
-    mkdir mqc
-    echo '{"id": "ont_pass_fail", "plot_type": "bargraph", "data": {"barcode01": {"pass": 1000, "fail": 50}}}' > mqc/${meta.id}.ont_pass_fail_mqc.json
+    echo '{"id": "ont_pass_fail", "plot_type": "bargraph", "data": {"barcode01": {"pass": 1000, "fail": 50}}}' > ${meta.id}.ont_pass_fail_mqc.json
     """
 }

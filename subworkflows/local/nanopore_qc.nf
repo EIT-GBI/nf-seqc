@@ -196,9 +196,14 @@ def acquisitionSummary( dir ) {
 }
 
 // Seconds an acquisition started after `first`, from final_summary's
-// started= (RFC 3339), or 0 when either is missing.
+// started= (RFC 3339, e.g. 2026-05-15T14:10:49.269675+00:00), or 0 when
+// either is missing or not in that form (that acquisition then starts at 0 h
+// in the time plots). Checked first, not parsed blind: a parse error inside
+// the channel operator that calls this would kill the run with a misleading
+// message.
 def secondsAfter( String started, String first ) {
-    if ( !started || !first ) {
+    def rfc3339 = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})/
+    if ( !( started ==~ rfc3339 ) || !( first ==~ rfc3339 ) ) {
         return 0
     }
     return java.time.Duration.between(
@@ -222,6 +227,7 @@ def ontSequencingSummaries( root ) {
         .collect { flowcell, fs ->
             def sorted  = fs.sort { f -> acquisitionSummary( f.parent ).started ?: '' }
             def starts  = sorted.collect { f -> acquisitionSummary( f.parent ).started }
+            // MinKNOW writes started= in UTC, so the earliest sorts first as text.
             def first   = starts.findAll { v -> v }.min()
             def reports = sorted.collect { f -> f.parent }.unique()
                 .collectMany { d -> files("${d}/report_*.json").findAll { r -> r.exists() } }

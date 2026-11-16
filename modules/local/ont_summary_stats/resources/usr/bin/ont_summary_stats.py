@@ -395,17 +395,27 @@ def report_sections(reports, flowcell):
         return []
     multi = len(acquisitions) > 1
 
+    # Each acquisition counts time from its own start; a restart is shifted by
+    # how long after the first it started, so it follows it on the time axis,
+    # as the sequencing_summary plots do (--offset).
+    def acq_start(acq):
+        info = acq.get("acquisition_run_info") or {}
+        return parse_time(info.get("data_read_start_time") or info.get("start_time"))
+    starts = [acq_start(a) for _, a, _ in acquisitions]
+    first = min((t for t in starts if t), default=None)
+
     activity, totals, occupancy, temperature, bias, messages = {}, {}, {}, {}, {}, {}
-    for run, acq, user_messages in acquisitions:
+    for (run, acq, user_messages), start in zip(acquisitions, starts):
         name = f"{flowcell}_{(run.get('run_id') or '')[:8]}" if multi else flowcell
         info = acq.get("acquisition_run_info") or {}
+        shift = (start - first).total_seconds() / 3600 if start and first else 0.0
         groups = {}
         for g in ((info.get("config_summary") or {}).get("channel_state_info") or {}).get("groups") or []:
             for s in g.get("states") or []:
                 groups[s.get("name")] = g.get("name")
         duty = (acq.get("duty_time") or [{}])[0]
         buckets = duty.get("bucket_ranges") or []
-        hours = [((b.get("start") or 0) + (b.get("end") or 0)) / 2 / 3600 for b in buckets]
+        hours = [shift + ((b.get("start") or 0) + (b.get("end") or 0)) / 2 / 3600 for b in buckets]
 
         by_group = collections.defaultdict(lambda: [0.0] * len(buckets))
         for state, v in (duty.get("channel_states") or {}).items():
@@ -450,14 +460,13 @@ def report_sections(reports, flowcell):
             for b in range(min(last_in_bin), max(last_in_bin) + 1):
                 voltage = last_in_bin.get(b, voltage)
                 steps[b] = voltage
-            bias[name] = {round((b + 1) * BIAS_BIN_S / 3600, 3): v for b, v in steps.items()}
+            bias[name] = {round(shift + (b + 1) * BIAS_BIN_S / 3600, 3): v for b, v in steps.items()}
 
-        start = parse_time(info.get("data_read_start_time") or info.get("start_time"))
         for i, m in enumerate(user_messages):
             severity = (m.get("severity") or "").replace("MESSAGE_SEVERITY_", "").lower()
             if severity in ("warning", "error"):
                 when = parse_time(m.get("time"))
-                hours_in = (when - start).total_seconds() / 3600 if when and start else None
+                hours_in = (when - first).total_seconds() / 3600 if when and first else None
                 messages[f"{name} #{i + 1}"] = {
                     "severity": severity,
                     "hours": hours_in if hours_in is not None else "",
@@ -486,8 +495,7 @@ def report_sections(reports, flowcell):
             "with Sequencing falling is the library running out.",
             "linegraph",
             activity,
-            {"xlab": "Hours", "ylab": "% of channel time", "ymin": 0, "ymax": 100, "xmin": 0,
-},
+            {"xlab": "Hours", "ylab": "% of channel time", "ymin": 0, "ymax": 100, "xmin": 0},
         ),
         section(
             "ont_pore_occupancy", "Pore occupancy",
@@ -542,13 +550,16 @@ def main():
     parser.add_argument("--offset", action="append", type=float, default=[],
                         help="seconds the i-th summary's acquisition started after the first (repeatable, in summary order)")
     parser.add_argument("--flowcell", default="flowcell", help="flow cell id, names flow-cell-level series")
-    parser.add_argument("--samples", default="{}",
+    parser.add_argument("--samples", default=None,
                         help="JSON {barcode: sample id} ('all' for an unbarcoded flow cell): the pipeline's samples. "
-                             "Only these are plotted, under these names; empty plots every barcode under its own name")
+                             "Only these are plotted, under these names; {} plots none. Without --samples every barcode is plotted "
+                             "under its own name")
     parser.add_argument("--mqc-dir", help="write MultiQC custom-content JSON here")
     args = parser.parse_args()
 
-    sample_ids = json.loads(args.samples)
+    # None: no --samples, plot every barcode under its own name (standalone use).
+    # {}: the pipeline reports no sample on this flow cell, so plot none.
+    sample_ids = json.loads(args.samples) if args.samples is not None else None
     by_barcode = collections.defaultdict(Stats)
     everything = Stats()
     q_time = collections.defaultdict(collections.Counter)
@@ -599,12 +610,16 @@ def main():
     # (below --min_barcode_reads, or unclassified without --include_failed) is
     # not plotted. Without --samples every barcode is, under its own name.
     barcoded = any(b != "unclassified" for b in by_barcode)
-    if not barcoded:
-        samples = {sample_ids.get("all") or args.flowcell: everything}
-    elif sample_ids:
+    if sample_ids is not None and "all" in sample_ids:
+        # The pipeline treats the flow cell as one sample (its POD5 are not in
+        # barcode folders), whatever barcodes MinKNOW wrote in the summary.
+        samples = {sample_ids["all"]: everything}
+    elif sample_ids is not None:
         samples = {sample_ids[b]: s for b, s in by_barcode.items() if b in sample_ids}
-    else:
+    elif barcoded:
         samples = {(f"unclassified_{args.flowcell}" if b == "unclassified" else b): s for b, s in by_barcode.items()}
+    else:
+        samples = {args.flowcell: everything}
 
     sections = summary_sections(samples, {"q_time": q_time, "channels": channels}, args.flowcell, start_s or 0)
     sections += report_sections(args.report, args.flowcell)

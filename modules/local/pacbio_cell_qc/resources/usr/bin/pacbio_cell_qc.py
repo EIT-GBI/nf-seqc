@@ -133,7 +133,7 @@ def table(report, table_id):
 
 def qv(value):
     """A read quality as QV: pbreports writes accuracy (0-1) or a QV."""
-    if value is None or value < 0:
+    if value is None or math.isnan(value) or value < 0:
         return None
     if value <= 1:
         q = MAX_QV if value >= 1 else min(MAX_QV, -10 * math.log10(1 - value))
@@ -145,10 +145,12 @@ def qv(value):
 
 
 def number(value):
+    """A float, or None for anything missing, unparsable or NaN."""
     try:
-        return float(value)
+        f = float(value)
     except (TypeError, ValueError):
         return None
+    return None if math.isnan(f) else f
 
 
 def zmw_sections(path, cell):
@@ -276,15 +278,15 @@ def report_sections(reports, cell, samples):
             "median_length": ccs.get("median_ccs_readlength"),
             "mean_npasses": ccs.get("mean_npasses"),
             "median_qv": ccs.get("median_qv"),
-            # pbreports gives these as fractions despite the name
-            "q30": q30 * 100 if q30 is not None and q30 <= 1 else q30,
-            "missing_adapters": adapters * 100 if adapters is not None and adapters <= 1 else adapters,
+            # pbreports gives these as fractions despite the names
+            "q30": q30 * 100 if q30 is not None else None,
+            "missing_adapters": adapters * 100 if adapters is not None else None,
         })
     if ctrl:
         concordance = number(ctrl.get("concordance_mean"))
         row.update({
             "control_reads": ctrl.get("reads_n"), "control_length": ctrl.get("readlength_mean"),
-            "control_concordance": concordance * 100 if concordance is not None and concordance <= 1 else concordance,
+            "control_concordance": concordance * 100 if concordance is not None else None,
         })
     row = {k: v for k, v in row.items() if v is not None}
     if row:

@@ -275,7 +275,9 @@ workflow {
         .flatMap { checked ->
             bamCheckWarnings( checked.collect { c -> c[1] }, expect_mods, 'BAM_CHECK' )
             def rows  = checked.findAll { meta, _row -> !meta.unassigned && ( meta.barcode != 'unclassified' || flag( params.include_failed ) ) }
-            def table = bamCheckTable( rows.collect { c -> c[1] }, check_reads )
+            // Sorted, so the table (a MultiQC input) is the same on every run
+            // and -resume does not rerun MULTIQC for nothing.
+            def table = bamCheckTable( rows.collect { c -> c[1] }.sort { r -> r.id }, check_reads )
             table ? [ table ] : []
         }
         .collectFile( name: 'bam_check_mqc.tsv' )

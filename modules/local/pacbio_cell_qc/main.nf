@@ -19,7 +19,7 @@ process PACBIO_CELL_QC {
     tuple val(meta), path(reports_zip, stageAs: 'reports/*'), path(zmw_metrics, stageAs: 'zmw/*')
 
     output:
-    path "mqc/*_mqc.json", emit: mqc, optional: true
+    path "*_mqc.json", emit: mqc, optional: true
     tuple val("${task.process}"), val('python'), eval('python3 --version | sed "s/^Python //"'), emit: versions_python, topic: versions
 
     script:
@@ -31,13 +31,12 @@ process PACBIO_CELL_QC {
     pacbio_cell_qc.py \\
         --cell '${meta.id}' \\
         --samples '${samples}' \\
-        --mqc-dir mqc \\
+        --mqc-dir . \\
         ${zip} ${zmw}
     """
 
     stub:
     """
-    mkdir mqc
-    echo '{"id": "pacbio_loading", "plot_type": "bargraph", "data": {"${meta.id}": {"p0": 10, "p1": 80, "p2": 10}}}' > mqc/${meta.id}.pacbio_loading_mqc.json
+    echo '{"id": "pacbio_loading", "plot_type": "bargraph", "data": {"${meta.id}": {"p0": 10, "p1": 80, "p2": 10}}}' > ${meta.id}.pacbio_loading_mqc.json
     """
 }
