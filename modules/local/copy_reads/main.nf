@@ -11,7 +11,7 @@
 // nothing is emitted from a subdirectory. `type: 'file'` keeps the in/
 // directory itself out of the output glob.
 //
-// No container: plain cp, run on the host. Local module, not tied to a
+// No container: plain cat, run on the host. Local module, not tied to a
 // platform; promote to an nf-mod repo only if another pipeline needs to
 // publish its inputs.
 
@@ -26,14 +26,15 @@ process COPY_READS {
     tuple val(meta), path('*', type: 'file'), emit: reads
 
     script:
-    // -L: the staged inputs are symlinks into the run directory.
-    // --reflink=never: GNU cp 9 first tries a copy-on-write clone, and since
-    // 2026-11-13 the sandpit-tokyo Lustre answers that with ENODATA ("No data
-    // available"), which cp takes as fatal instead of falling back. A plain
-    // byte copy is what we want anyway: source and destination are on
-    // different filesystems in production. A GNU flag: COPY_READS runs on the
-    // (Linux) host, with no container.
-    def copies = copyPairs( reads, names ).collect { src, dest -> "cp -L --reflink=never '${src}' '${dest}'" }.join('\n')
+    // cat, not cp: the staged inputs are symlinks into the run directory, and
+    // cat reads through them; it is a plain byte copy, which is what we want
+    // (other filesystem in production). GNU cp 9 instead first tries a
+    // copy-on-write clone, and since 2026-11-13 the sandpit-tokyo Lustre
+    // answers that with ENODATA ("No data available"), which cp takes as
+    // fatal. `cp --reflink=never` would avoid that on Linux only (macOS cp has
+    // no such flag); cat works everywhere COPY_READS runs (the host, no
+    // container).
+    def copies = copyPairs( reads, names ).collect { src, dest -> "cat -- '${src}' > '${dest}'" }.join('\n')
     """
     ${copies}
     """
