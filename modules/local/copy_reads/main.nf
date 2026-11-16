@@ -27,7 +27,13 @@ process COPY_READS {
 
     script:
     // -L: the staged inputs are symlinks into the run directory.
-    def copies = copyPairs( reads, names ).collect { src, dest -> "cp -L '${src}' '${dest}'" }.join('\n')
+    // --reflink=never: GNU cp 9 first tries a copy-on-write clone, and since
+    // 2026-11-13 the sandpit-tokyo Lustre answers that with ENODATA ("No data
+    // available"), which cp takes as fatal instead of falling back. A plain
+    // byte copy is what we want anyway: source and destination are on
+    // different filesystems in production. A GNU flag: COPY_READS runs on the
+    // (Linux) host, with no container.
+    def copies = copyPairs( reads, names ).collect { src, dest -> "cp -L --reflink=never '${src}' '${dest}'" }.join('\n')
     """
     ${copies}
     """
