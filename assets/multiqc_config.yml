@@ -8,8 +8,10 @@
 #   AVITI:    General Statistics, Unassigned barcodes, bases2fastq,
 #             FastQC, Demultiplexing.
 #   Nanopore / PacBio: General Statistics, Unassigned barcodes, Run Metrics,
+#             the flow cell / SMRT Cell group, the reads group,
 #             Demultiplexing. Per-sample read statistics are General
-#             Statistics columns, from the instruments' own reports.
+#             Statistics columns; everything is from the instruments' own
+#             reports (MinKNOW, pbreports), never from the reads.
 # FastQC opens with Sequence Quality Histograms, Per Base Sequence Content and
 # Adapter Content. The barcodes and Demultiplexing tables and the % Reads /
 # Loading columns come from subworkflows/local/demux_report.nf, for both
@@ -85,6 +87,16 @@ report_section_order:
     order: 990
   nanopore_run_metrics:
     order: 990
+  # Long-read QC groups (ont_summary_stats.py, pacbio_cell_qc.py), under the
+  # Run Metrics table: the flow cell / SMRT Cell first, then the reads.
+  nanopore_flowcell:
+    order: 970
+  nanopore_reads:
+    order: 960
+  pacbio_cell:
+    order: 970
+  pacbio_reads:
+    order: 960
   fastqc:
     order: 900
   demux_summary:
@@ -105,3 +117,60 @@ report_section_order:
     order: 2
   fastqc_adapter_content:
     order: 3
+  # Sections within the long-read groups, in reading order.
+  ont_pore_activity_total:
+    order: 1
+  ont_pore_activity:
+    order: 2
+  ont_pore_occupancy:
+    order: 3
+  ont_active_channels:
+    order: 4
+  ont_q_over_time:
+    order: 5
+  ont_temperature:
+    order: 6
+  ont_bias_voltage:
+    order: 7
+  ont_minknow_messages:
+    order: 8
+  ont_pass_fail:
+    order: 1
+  ont_yield_over_time:
+    order: 2
+  ont_read_length:
+    order: 3
+  ont_read_length_yield:
+    order: 4
+  ont_qscore:
+    order: 5
+  ont_q_by_length:
+    order: 6
+  ont_speed:
+    order: 7
+  ont_end_reasons:
+    order: 8
+  ont_barcode_score:
+    order: 9
+  pacbio_cell_details:
+    order: 1
+  pacbio_loading:
+    order: 2
+  pacbio_polymerase_length:
+    order: 3
+  pacbio_methylation:
+    order: 4
+  pacbio_hifi_length:
+    order: 1
+  pacbio_hifi_yield_by_length:
+    order: 2
+  pacbio_read_quality:
+    order: 3
+  pacbio_qv_by_length:
+    order: 4
+  pacbio_npasses:
+    order: 5
+  pacbio_barcode_length:
+    order: 6
+  pacbio_barcode_quality:
+    order: 7
