@@ -32,9 +32,7 @@ process COPY_READS {
     // nothing here needs cp's extras. Unlike cp, the copy takes the default
     // mode (umask), not the source's, so a read-only source is not delivered
     // read-only; delivered permissions are still to be agreed with scientific
-    // computing. Reads from the sandpit-tokyo Lustre intermittently fail with
-    // "No data available" (since 2026-11-13); conf/base.config retries the
-    // task after a wait, see the CLAUDE.md gotcha.
+    // computing.
     def copies = copyPairs( reads, names ).collect { src, dest -> "cat -- '${src}' > '${dest}'" }.join('\n')
     """
     ${copies}
