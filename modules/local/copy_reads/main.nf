@@ -33,7 +33,9 @@ process COPY_READS {
     // answers that with ENODATA ("No data available"), which cp takes as
     // fatal. `cp --reflink=never` would avoid that on Linux only (macOS cp has
     // no such flag); cat works everywhere COPY_READS runs (the host, no
-    // container).
+    // container). Unlike cp, the copy takes the default mode (umask), not the
+    // source's, so a read-only source is not delivered read-only; delivered
+    // permissions are still to be agreed with scientific computing.
     def copies = copyPairs( reads, names ).collect { src, dest -> "cat -- '${src}' > '${dest}'" }.join('\n')
     """
     ${copies}

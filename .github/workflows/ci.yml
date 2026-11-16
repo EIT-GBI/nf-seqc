@@ -56,8 +56,8 @@ jobs:
             exit 1
           fi
 
-  # COPY_READS for real: -stub only touches the target names, so the cp
-  # command and the renaming (Revio BAM + .pbi) are tested here.
+  # COPY_READS for real: -stub only touches the target names, so the copy
+  # command (cat) and the renaming (Revio BAM + .pbi) are tested here.
   copy-reads:
     name: Copy reads (real run)
     runs-on: ubuntu-latest
