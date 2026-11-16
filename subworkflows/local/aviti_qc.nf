@@ -8,7 +8,7 @@
 
 include { BASES2FASTQ   } from '../../modules/local/bases2fastq/main.nf'
 include { FASTQC_FASTQC } from '../../modules/fastqc/fastqc/main.nf'
-include { demuxSummary; withPhixReads; barcodeName; readShareTable; demuxSummaryTable; unknownBarcodesTable } from './demux_report.nf'
+include { demuxSummary; withPhixReads; phixSample; barcodeName; readShareTable; demuxSummaryTable; unknownBarcodesTable } from './demux_report.nf'
 
 // Element's own run QC report (<run>_QC.html): published next to the MultiQC
 // report rather than with the QC files, because scientists open it directly.
@@ -19,12 +19,10 @@ def isElementReport( f ) {
 // PhiX is the run's spike-in control, not a sample: no FASTQ delivered, no
 // FastQC, no sample row. Its share of all reads is a column of the
 // Demultiplexing table; the rest stays in bases2fastq's own reports.
+// Same rule as phixSample() on the sample name: PhiX_R1.fastq.gz,
+// PhiX_v3_R1.fastq.gz.
 def isPhiX( f ) {
     return f.name.startsWith('PhiX_')
-}
-// The same, for a sample name in RunStats.json.
-def isPhiXName( name ) {
-    return name.toString() == 'PhiX'
 }
 
 // Reads bases2fastq could not assign to a sample: always delivered, QC'd only
@@ -55,8 +53,8 @@ def bases2fastqReads( run_stats ) {
     def stats    = new groovy.json.JsonSlurper().parse( run_stats.toFile() )
     def assigned = stats.SampleStats.collectEntries { s -> [ ( s.SampleName ): s.NumPolonies as long ] }
     def total    = stats.NumPolonies as long
-    def phix     = assigned.findAll { name, _n -> isPhiXName( name ) }.values().sum() ?: 0L
-    def samples  = assigned.findAll { name, _n -> !isPhiXName( name ) }
+    def phix     = assigned.findAll { name, _n -> phixSample( name ) }.values().sum() ?: 0L
+    def samples  = assigned.findAll { name, _n -> !phixSample( name ) }
     def barcodes = ( stats.Lanes ?: [] ).collectMany { lane ->
         ( lane.UnassignedSequences ?: [] ).collect { u ->
             [ lane: lane.Lane, index: barcodeName( u.I1, u.I2 ), reads: u.Count as long ]

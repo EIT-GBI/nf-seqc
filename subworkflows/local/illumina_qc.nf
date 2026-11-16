@@ -24,7 +24,7 @@
 
 include { FASTQC_FASTQC        } from '../../modules/fastqc/fastqc/main.nf'
 include { INTEROP_RUN_METRICS  } from '../../modules/interop/run_metrics/main.nf'
-include { demuxSummary; withPhix; barcodeName; readShareTable; demuxSummaryTable; unknownBarcodesTable } from './demux_report.nf'
+include { demuxSummary; withPhix; withPhixSampleReads; phixSample; barcodeName; readShareTable; demuxSummaryTable; unknownBarcodesTable } from './demux_report.nf'
 
 // BCL Convert's report directory, wherever the FASTQ came from: Analysis/<n>/Data/Reports/
 // on-instrument (NextSeq 1000/2000), Reports/ in a bcl-convert output dir. On-instrument
@@ -74,7 +74,12 @@ def demuxReads( stats ) {
             [ lane: row.Lane, index: barcodeName( row.index, row.index2 ), reads: row['# Reads'] as long ]
         }
         : []
-    return demuxSummary( reads.findAll { id, _n -> id != 'Undetermined' }, reads['Undetermined'] ?: 0L, barcodes )
+    // PhiX given its own index in the sample sheet is the spike-in, not a
+    // sample: its reads count in the total but it gets no sample row. Its
+    // share is InterOp's (the PhiX column), which counts it wherever it went.
+    def samples = reads.findAll { id, _n -> id != 'Undetermined' && !phixSample( id ) }
+    def phix    = reads.findAll { id, _n -> phixSample( id ) }.values().sum() ?: 0L
+    return withPhixSampleReads( demuxSummary( samples, reads['Undetermined'] ?: 0L, barcodes ), phix as long )
 }
 
 // The share of PF reads the instrument aligned to PhiX, from
@@ -154,7 +159,7 @@ workflow ILLUMINA_QC {
     ch_demux_summary = ch_demux
         .combine( INTEROP_RUN_METRICS.out.metrics.map { _meta, csv -> [ phixAligned( csv ) ] } )
         .map { meta, demux, phix ->
-            def with_phix = withPhix( demux, phix, 'aligned to PhiX by the instrument (InterOp % Aligned; usually in Undetermined, as PhiX is spiked in without an index)' )
+            def with_phix = withPhix( demux, phix, 'aligned to PhiX by the instrument (InterOp % Aligned), wherever it went: in Undetermined when PhiX has no index in the sample sheet' )
             demuxSummaryTable( meta.run, with_phix, max_undetermined, 'BCL Convert Demultiplex_Stats.csv', 'Undetermined', 'ILLUMINA_QC' )
         }
         .collectFile( name: 'demux_summary_mqc.tsv' )

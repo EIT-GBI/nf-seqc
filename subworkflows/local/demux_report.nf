@@ -48,17 +48,32 @@ def withPhix( demux, pct, String source ) {
     return demux && pct != null ? demux + [ phix_pct: pct as double, phix_source: source ] : demux
 }
 
-// The same for a platform that assigns PhiX to a control sample of its own
-// (AVITI), whose reads demuxSummary() did not count: they are added to the
-// run total, so % Reads, the unassigned share and the even split stay shares
-// of all reads, and phix_pct is the control's share of that total.
-def withPhixReads( demux, long reads, String source ) {
-    if ( !demux ) {
+// A demultiplexer sample that is the PhiX spike-in rather than a sample: PhiX,
+// or PhiX_<anything> (AVITI's control, or PhiX given an index in an Illumina
+// sample sheet). It is kept out of the samples (no % Reads or Loading row, not
+// in the even split) and its reads are added back with withPhixSampleReads().
+def phixSample( name ) {
+    def n = name.toString()
+    return n == 'PhiX' || n.startsWith('PhiX_')
+}
+
+// The demux map with reads demuxSummary() did not count, because they went to
+// a PhiX sample, added to the run total, so % Reads, the unassigned share and
+// the even split stay shares of all reads.
+def withPhixSampleReads( demux, long reads ) {
+    if ( !demux || !reads ) {
         return demux
     }
     def total    = demux.total + reads
     def assigned = demux.samples.values().sum() ?: 0L
-    return withPhix( demux + [ total: total, even: 100.0 * assigned / total / demux.samples.size() ], 100.0 * reads / total, source )
+    return demux + [ total: total, even: 100.0 * assigned / total / demux.samples.size() ]
+}
+
+// The same for a platform whose PhiX reads all went to a PhiX sample (AVITI's
+// control), with phix_pct their share of that total.
+def withPhixReads( demux, long reads, String source ) {
+    def with_reads = withPhixSampleReads( demux, reads )
+    return with_reads ? withPhix( with_reads, 100.0 * reads / with_reads.total, source ) : with_reads
 }
 
 // An index pair as one string, i7+i5; a single-index run has no second index.

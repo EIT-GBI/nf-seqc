@@ -366,10 +366,19 @@ def revioCellMetrics( cell, String movie, String well_sample ) {
     ]
 }
 
+// Each SMRT Cell's name in the report, from [ well, movie ] pairs: its well,
+// as the instrument names it, or "<well> <movie>" for a well that holds more
+// than one movie, so the two do not share a row. The Run Metrics table and
+// PACBIO_CELL_QC's sections both use it, so their rows line up.
+def revioCellNames( List wells_movies ) {
+    def pairs    = wells_movies.unique()
+    def repeated = pairs.countBy { wm -> wm[0] }.findAll { _well, n -> n > 1 }.keySet()
+    return pairs.collectEntries { wm -> [ ( wm ): wm[0] in repeated ? "${wm[0]} ${wm[1]}".toString() : wm[0] ] }
+}
+
 // The one PACBIO_CELL_QC input for the run's SMRT Cells in the Revio layout:
 // [ meta, reports_zips, zmw_metrics ]. meta.cells lists each cell (its well,
-// as the Run Metrics table names it, plus the movie for a well collected
-// twice), the names of its two files (null when missing, which the module
+// named by revioCellNames(), as in the Run Metrics table), the names of its two files (null when missing, which the module
 // skips) and each barcode's sample id. null when no BAM is in the Revio layout.
 def revioCellInputs( List samples ) {
     def cells = samples.findAll { meta, bam -> meta.movie && revioCell( bam ) }
@@ -391,10 +400,8 @@ def revioCellInputs( List samples ) {
     if ( !cells ) {
         return null
     }
-    // A well collected twice (two movies) would give two cells of one name,
-    // whose rows overwrite each other; name those after the movie too.
-    def repeated = cells.countBy { c -> c.cell }.findAll { _well, n -> n > 1 }.keySet()
-    cells = cells.collect { c -> c.cell in repeated ? c + [ cell: "${c.cell} ${c.meta.movie}".toString() ] : c }
+    def names = revioCellNames( cells.collect { c -> [ c.cell, c.meta.movie ] } )
+    cells = cells.collect { c -> c + [ cell: names[ [ c.cell, c.meta.movie ] ] ] }
     def meta = cells[0].meta.subMap( [ 'run', 'platform' ] ) + [
         id:    cells[0].meta.run,
         cells: cells.collect { c -> [ cell: c.cell, reports_zip: c.zip?.name, zmw_metrics: c.zmw?.name, samples: c.samples ] },
@@ -478,9 +485,10 @@ def revioMetricsTable( List samples ) {
         "#         format: '{:,.1f}'",
         "Cell\twell_sample\tmovie\tp0\tp1\tp2\thifi_reads\thifi_yield\tmean_length\tn50\tmean_qv\tq30",
     ]
+    def names = revioCellNames( cells.collect { c -> [ c.well, c.movie ] } )
     def lines = cells.collect { c ->
         def m = revioCellMetrics( c.cell, c.movie, revioSampleNames( c.cell, c.movie ).well_sample )
-        ( [ c.well ] + m.values() ).join('\t')
+        ( [ names[ [ c.well, c.movie ] ] ] + m.values() ).join('\t')
     }
     return ( header + lines ).join('\n') + '\n'
 }
