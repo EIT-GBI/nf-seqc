@@ -27,15 +27,14 @@ process COPY_READS {
 
     script:
     // cat, not cp: the staged inputs are symlinks into the run directory, and
-    // cat reads through them; it is a plain byte copy, which is what we want
-    // (other filesystem in production). GNU cp 9 instead first tries a
-    // copy-on-write clone, and since 2026-11-13 the sandpit-tokyo Lustre
-    // answers that with ENODATA ("No data available"), which cp takes as
-    // fatal. `cp --reflink=never` would avoid that on Linux only (macOS cp has
-    // no such flag); cat works everywhere COPY_READS runs (the host, no
-    // container). Unlike cp, the copy takes the default mode (umask), not the
-    // source's, so a read-only source is not delivered read-only; delivered
-    // permissions are still to be agreed with scientific computing.
+    // cat reads through them as a plain byte copy, which is what we want (other
+    // filesystem in production). It works with every cat, GNU or macOS, and
+    // nothing here needs cp's extras. Unlike cp, the copy takes the default
+    // mode (umask), not the source's, so a read-only source is not delivered
+    // read-only; delivered permissions are still to be agreed with scientific
+    // computing. Reads from the sandpit-tokyo Lustre intermittently fail with
+    // "No data available" (since 2026-11-13); conf/base.config retries the
+    // task after a wait, see the CLAUDE.md gotcha.
     def copies = copyPairs( reads, names ).collect { src, dest -> "cat -- '${src}' > '${dest}'" }.join('\n')
     """
     ${copies}

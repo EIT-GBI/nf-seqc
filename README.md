@@ -132,10 +132,11 @@ nextflow run . -profile cluster,test_real_pacbio     # Revio, one SMRT Cell
 Submit them with `sbatch` as above. `conf/test_real.config` lists what each
 fixture holds.
 
-Until scientific computing fixes the tokyo Lustre copy error (since
-2026-11-13, Nextflow's `copy` publishing fails there with "No data
-available"), publish test runs as symlinks: add `-c symlink.config`, a file
-holding `workflow.output.mode = 'symlink'`. A profile cannot set it.
+Until scientific computing fixes the tokyo Lustre read error (since
+2026-11-13, reads on some compute nodes intermittently fail with "No data
+available", which also breaks Nextflow's `copy` publishing), publish test
+runs as symlinks: add `-c symlink.config`, a file holding
+`workflow.output.mode = 'symlink'`. A profile cannot set it.
 
 ## Supported platforms
 
