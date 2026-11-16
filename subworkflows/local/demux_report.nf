@@ -42,8 +42,23 @@ def demuxSummary( Map samples, long unassigned, List barcodes ) {
 
 // The demux map with the PhiX spike-in's share of all reads, and where it came
 // from, for the Demultiplexing table. pct null (unknown) leaves it unchanged.
+// For a platform whose PhiX reads are already in the demux total (Illumina:
+// they are part of Undetermined).
 def withPhix( demux, pct, String source ) {
     return demux && pct != null ? demux + [ phix_pct: pct as double, phix_source: source ] : demux
+}
+
+// The same for a platform that assigns PhiX to a control sample of its own
+// (AVITI), whose reads demuxSummary() did not count: they are added to the
+// run total, so % Reads, the unassigned share and the even split stay shares
+// of all reads, and phix_pct is the control's share of that total.
+def withPhixReads( demux, long reads, String source ) {
+    if ( !demux ) {
+        return demux
+    }
+    def total    = demux.total + reads
+    def assigned = demux.samples.values().sum() ?: 0L
+    return withPhix( demux + [ total: total, even: 100.0 * assigned / total / demux.samples.size() ], 100.0 * reads / total, source )
 }
 
 // An index pair as one string, i7+i5; a single-index run has no second index.

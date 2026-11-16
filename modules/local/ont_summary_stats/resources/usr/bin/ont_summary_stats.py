@@ -63,6 +63,10 @@ STATE_GROUPS = {
     "recovering": ("Recovering", "#f7b538"),
     "inactive": ("Inactive", "#8e8e8e"),
     "unclassified": ("Unclassified", "#d1d1d1"),
+    # Any group MinKNOW names that is not above (a newer MinKNOW may add or
+    # rename one). The pore-activity bars take a fixed category list, so it is
+    # pooled here rather than dropped, and each bar still adds up to 100%.
+    "other": ("Other states", "#5b4a8b"),
 }
 DEFAULT_STATE_GROUP = {
     "strand": "sequencing", "adapter": "sequencing", "pore": "pore",
@@ -450,6 +454,8 @@ def report_sections(reports, flowcell, prefix_rows=False):
         by_group = collections.defaultdict(lambda: [0.0] * len(buckets))
         for state, v in (duty.get("channel_states") or {}).items():
             group = groups.get(state) or DEFAULT_STATE_GROUP.get(state, "inactive")
+            if group not in STATE_GROUPS:
+                group = "other"
             for i, t in enumerate(v.get("state_times") or []):
                 if i < len(buckets):
                     by_group[group][i] += float(t or 0)

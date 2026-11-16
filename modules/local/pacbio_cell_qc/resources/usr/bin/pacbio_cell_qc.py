@@ -28,6 +28,7 @@ horizontally only, so the bins run down the page.
 
 import argparse
 import collections
+import concurrent.futures
 import csv
 import gzip
 import json
@@ -122,20 +123,25 @@ def pass_label(b):
     return f"{PASS_MAX}+" if b >= PASS_MAX else f"{b}-{b + PASS_BIN - 1}"
 
 
-def bars(series, label, step=None, start=None):
+def bars(series, label, step=None, start=None, missing=0):
     """Bar-chart data with one row per bin: {row label: {category: value}}.
 
     series is {category: {bin: value}}, a category being a cell or a sample.
     Rows run from the smallest bin to the largest; with step, every bin in
     between gets a row even where no category has a value, so a gap shows as
-    a gap. start is the first bin to show (default the smallest with data)."""
+    a gap. start is the first bin to show (default the smallest with data).
+    missing is a category's value in a bin it has none for: 0 for a share of
+    reads; None (no bar) for a value that is not a count, such as a mean."""
     bins = sorted({b for values in series.values() for b in values})
     if not bins:
         return {}
     if step:
         lo = bins[0] if start is None else min(start, bins[0])
         bins = list(range(int(lo), int(bins[-1]) + 1, step))
-    return {label(b): {c: values.get(b, 0) for c, values in series.items()} for b in bins}
+    return {
+        label(b): {c: values.get(b, missing) for c, values in series.items() if b in values or missing is not None}
+        for b in bins
+    }
 
 
 def bar_pconfig(xlab, ylab, **extra):
@@ -280,7 +286,7 @@ def zmw_sections(per_cell):
             "pacbio_qv_by_length", "HiFi quality by read length",
             f"Mean QV of each cell's HiFi reads in each read-length bin ({LEN_BIN // 1000} kb bins; bins with "
             "fewer than 20 reads left out). " + note,
-            "bargraph", bars(qv_by_len, lambda b: len_label(b, LEN_BIN, LEN_MAX)),
+            "bargraph", bars(qv_by_len, lambda b: len_label(b, LEN_BIN, LEN_MAX), missing=None),
             bar_pconfig("HiFi read length", "Mean QV"),
         ))
     quals = series("quals")
@@ -479,15 +485,22 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--cells", required=True, help="JSON list of the run's cells (see the module docstring)")
     parser.add_argument("--mqc-dir", required=True)
+    parser.add_argument("--threads", type=int, default=1, help="cells read in parallel")
     args = parser.parse_args()
 
+    cells = json.loads(args.cells)
+    # zmw_metrics.csv.gz is the slow part (a CSV row per ZMW in the subset):
+    # read the cells' files in parallel processes.
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, args.threads)) as pool:
+        distributions = list(pool.map(zmw_distributions, [c.get("zmw_metrics") for c in cells]))
+
     per_cell_sections, zmw, per_sample = [], {}, {}
-    for c in json.loads(args.cells):
+    for c, dist in zip(cells, distributions):
         cell = c["cell"]
         samples = {barcode_key(k): v for k, v in (c.get("samples") or {}).items()}
         reports = read_zip(c.get("reports_zip"))
         per_cell_sections += report_sections(reports, cell)
-        zmw[cell] = zmw_distributions(c.get("zmw_metrics"))
+        zmw[cell] = dist
         for key, series in barcode_series(reports, samples).items():
             per_sample.setdefault(key, {}).update(series)
 

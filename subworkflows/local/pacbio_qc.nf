@@ -368,9 +368,9 @@ def revioCellMetrics( cell, String movie, String well_sample ) {
 
 // The one PACBIO_CELL_QC input for the run's SMRT Cells in the Revio layout:
 // [ meta, reports_zips, zmw_metrics ]. meta.cells lists each cell (its well,
-// as the Run Metrics table names it), the names of its two files (null when
-// missing, which the module skips) and each barcode's sample id. null when
-// no BAM is in the Revio layout.
+// as the Run Metrics table names it, plus the movie for a well collected
+// twice), the names of its two files (null when missing, which the module
+// skips) and each barcode's sample id. null when no BAM is in the Revio layout.
 def revioCellInputs( List samples ) {
     def cells = samples.findAll { meta, bam -> meta.movie && revioCell( bam ) }
         .groupBy { meta, bam -> [ meta.well, meta.movie, revioCell( bam ) ] }
@@ -391,6 +391,10 @@ def revioCellInputs( List samples ) {
     if ( !cells ) {
         return null
     }
+    // A well collected twice (two movies) would give two cells of one name,
+    // whose rows overwrite each other; name those after the movie too.
+    def repeated = cells.countBy { c -> c.cell }.findAll { _well, n -> n > 1 }.keySet()
+    cells = cells.collect { c -> c.cell in repeated ? c + [ cell: "${c.cell} ${c.meta.movie}".toString() ] : c }
     def meta = cells[0].meta.subMap( [ 'run', 'platform' ] ) + [
         id:    cells[0].meta.run,
         cells: cells.collect { c -> [ cell: c.cell, reports_zip: c.zip?.name, zmw_metrics: c.zmw?.name, samples: c.samples ] },

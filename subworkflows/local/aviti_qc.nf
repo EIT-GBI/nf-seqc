@@ -8,7 +8,7 @@
 
 include { BASES2FASTQ   } from '../../modules/local/bases2fastq/main.nf'
 include { FASTQC_FASTQC } from '../../modules/fastqc/fastqc/main.nf'
-include { demuxSummary; withPhix; barcodeName; readShareTable; demuxSummaryTable; unknownBarcodesTable } from './demux_report.nf'
+include { demuxSummary; withPhixReads; barcodeName; readShareTable; demuxSummaryTable; unknownBarcodesTable } from './demux_report.nf'
 
 // Element's own run QC report (<run>_QC.html): published next to the MultiQC
 // report rather than with the QC files, because scientists open it directly.
@@ -63,7 +63,7 @@ def bases2fastqReads( run_stats ) {
         }
     }
     def demux = demuxSummary( samples, total - ( assigned.values().sum() ?: 0L ), barcodes )
-    return total ? withPhix( demux, 100.0 * phix / total, 'assigned to the PhiX control by bases2fastq' ) : demux
+    return withPhixReads( demux, phix as long, 'assigned to the PhiX control by bases2fastq' )
 }
 
 workflow AVITI_QC {

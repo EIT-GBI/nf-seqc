@@ -8,7 +8,8 @@
 // files themselves are staged from reports_zips / zmw_metrics (movie-named,
 // so unique). All cells go in one task because the distributions are bar
 // charts with one bar per cell in each bin row, and MultiQC merges separate
-// files by row name, which would drop all but one cell.
+// files by row name, which would drop all but one cell. The cells' files are
+// read in parallel, one process per CPU (conf/base.config gives it 4).
 //
 // Local module — Revio-specific and pipeline-shaped; promote to an nf-mod repo
 // only if another pipeline needs it. The script ships as a module binary
@@ -38,6 +39,7 @@ process PACBIO_CELL_QC {
     """
     pacbio_cell_qc.py \\
         --cells '${json}' \\
+        --threads ${task.cpus} \\
         --mqc-dir .
     """
 
