@@ -16,8 +16,8 @@ All four take any mix of run folders, files and glob patterns, and `-o` for the
 output CSV:
 
 ```bash
-python3 illumina_sample_metadata.py /mnt/instrument-data/illumina_nextseq_1/261112_* -o nextseq.csv
-python3 aviti_sample_metadata.py   /mnt/instrument-data/element_aviti_1/20260924_* -o aviti.csv
+python3 illumina_sample_metadata.py /mnt/instrument-prep-zone/sequencing/illumina_nextseq_VH02427/2026/261112_* -o nextseq.csv
+python3 aviti_sample_metadata.py   /mnt/instrument-prep-zone/sequencing/element_aviti_AV252906/2026/20260924_* -o aviti.csv
 python3 nanopore_sample_metadata.py <experiment_dir> -o nanopore.csv
 python3 pacbio_sample_metadata.py  <revio_run_dir> -o revio.csv
 ```
