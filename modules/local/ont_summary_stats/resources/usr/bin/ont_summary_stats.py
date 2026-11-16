@@ -358,11 +358,13 @@ def summary_sections(samples, per_flowcell, flowcell, start_s, prefix=""):
             {"xlab": "Hours", "ylab": "Median Q-score", "xmin": 0},
         ))
     if fc["channels"]:
-        # Hourly channel sets pooled into 2 h buckets, counted from the start
-        # of sequencing.
+        # Hourly channel sets pooled into 2 h buckets. Both count from the
+        # acquisition's start (sequencing_summary start_time is relative to it),
+        # as MinKNOW's pore-activity buckets do; counting from the first read
+        # instead would shift every boundary by up to an hour.
         buckets = collections.defaultdict(set)
         for t, c in fc["channels"].items():
-            buckets[max(0, int((t * TIME_BIN_S - start_s) // CHANNEL_BIN_S))] |= c
+            buckets[int(t * TIME_BIN_S // CHANNEL_BIN_S)] |= c
         step = CHANNEL_BIN_S / 3600
         out.append(section(
             "ont_active_channels", "Active channels over time",

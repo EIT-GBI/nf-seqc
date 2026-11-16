@@ -295,7 +295,7 @@ def zmw_sections(per_cell):
             "pacbio_read_quality", "Read quality distribution",
             f"Share of each cell's CCS reads by read quality ({QV_BIN}-QV bins, capped at QV {MAX_QV}), HiFi and "
             "below. HiFi is QV 20 and above. " + note,
-            "bargraph", bars(quals, qv_label, QV_BIN, 0),
+            "bargraph", bars(quals, qv_label, QV_BIN),
             bar_pconfig("Read quality", "% of reads"),
         ))
     passes = series("passes")
