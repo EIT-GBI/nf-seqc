@@ -1,5 +1,5 @@
 //
-// Runs COPY_READS for real (not -stub) on small files, so the cp command and
+// Runs COPY_READS for real (not -stub) on small files, so the copy command and
 // the renaming are tested; the stub only touches the target names.
 //
 //     nextflow run tests/copy_reads.nf --src <dir> --outdir <dir>
