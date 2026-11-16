@@ -8,7 +8,7 @@
 
 include { BASES2FASTQ   } from '../../modules/local/bases2fastq/main.nf'
 include { FASTQC_FASTQC } from '../../modules/fastqc/fastqc/main.nf'
-include { demuxSummary; barcodeName; readShareTable; demuxSummaryTable; unknownBarcodesTable } from './demux_report.nf'
+include { demuxSummary; withPhix; barcodeName; readShareTable; demuxSummaryTable; unknownBarcodesTable } from './demux_report.nf'
 
 // Element's own run QC report (<run>_QC.html): published next to the MultiQC
 // report rather than with the QC files, because scientists open it directly.
@@ -17,9 +17,14 @@ def isElementReport( f ) {
 }
 
 // PhiX is the run's spike-in control, not a sample: no FASTQ delivered, no
-// FastQC, no sample row. Its numbers stay in bases2fastq's own reports.
+// FastQC, no sample row. Its share of all reads is a column of the
+// Demultiplexing table; the rest stays in bases2fastq's own reports.
 def isPhiX( f ) {
     return f.name.startsWith('PhiX_')
+}
+// The same, for a sample name in RunStats.json.
+def isPhiXName( name ) {
+    return name.toString() == 'PhiX'
 }
 
 // Reads bases2fastq could not assign to a sample: always delivered, QC'd only
@@ -38,21 +43,27 @@ def asFileList( files ) {
 
 // Polonies per sample from bases2fastq's RunStats.json, and each lane's
 // UnassignedSequences, as demuxSummary() takes them; Unassigned is the run
-// total less the samples. null when there is nothing to report on (e.g. the
-// empty file a stub run writes).
+// total less every assigned sample, PhiX included. PhiX is the spike-in, not
+// a sample: it gets no % Reads or Loading row and does not count in the even
+// split, and its share of all reads goes to the Demultiplexing table instead.
+// null when there is nothing to report on (e.g. the empty file a stub run
+// writes).
 def bases2fastqReads( run_stats ) {
     if ( !run_stats.size() ) {
         return null
     }
     def stats    = new groovy.json.JsonSlurper().parse( run_stats.toFile() )
-    def samples  = stats.SampleStats.collectEntries { s -> [ ( s.SampleName ): s.NumPolonies as long ] }
+    def assigned = stats.SampleStats.collectEntries { s -> [ ( s.SampleName ): s.NumPolonies as long ] }
     def total    = stats.NumPolonies as long
+    def phix     = assigned.findAll { name, _n -> isPhiXName( name ) }.values().sum() ?: 0L
+    def samples  = assigned.findAll { name, _n -> !isPhiXName( name ) }
     def barcodes = ( stats.Lanes ?: [] ).collectMany { lane ->
         ( lane.UnassignedSequences ?: [] ).collect { u ->
             [ lane: lane.Lane, index: barcodeName( u.I1, u.I2 ), reads: u.Count as long ]
         }
     }
-    return demuxSummary( samples, total - ( samples.values().sum() ?: 0L ), barcodes )
+    def demux = demuxSummary( samples, total - ( assigned.values().sum() ?: 0L ), barcodes )
+    return total ? withPhix( demux, 100.0 * phix / total, 'assigned to the PhiX control by bases2fastq' ) : demux
 }
 
 workflow AVITI_QC {

@@ -24,7 +24,7 @@
 
 include { FASTQC_FASTQC        } from '../../modules/fastqc/fastqc/main.nf'
 include { INTEROP_RUN_METRICS  } from '../../modules/interop/run_metrics/main.nf'
-include { demuxSummary; barcodeName; readShareTable; demuxSummaryTable; unknownBarcodesTable } from './demux_report.nf'
+include { demuxSummary; withPhix; barcodeName; readShareTable; demuxSummaryTable; unknownBarcodesTable } from './demux_report.nf'
 
 // BCL Convert's report directory, wherever the FASTQ came from: Analysis/<n>/Data/Reports/
 // on-instrument (NextSeq 1000/2000), Reports/ in a bcl-convert output dir. On-instrument
@@ -75,6 +75,16 @@ def demuxReads( stats ) {
         }
         : []
     return demuxSummary( reads.findAll { id, _n -> id != 'Undetermined' }, reads['Undetermined'] ?: 0L, barcodes )
+}
+
+// The share of PF reads the instrument aligned to PhiX, from
+// INTEROP_RUN_METRICS' one-row CSV ('PhixAligned (%)', InterOp's % Aligned).
+// null when the CSV is empty (stub) or the value is n/a. 0 means no PhiX was
+// aligned: none was spiked in, or the instrument did not align it.
+def phixAligned( csv ) {
+    def rows  = csv.size() ? csv.splitCsv( header: true ) : []
+    def value = rows ? rows[0]['PhixAligned (%)'] : null
+    return value?.toString()?.isDouble() ? value.toString().toDouble() : null
 }
 
 // Reads BCL Convert could not assign to a sample: always delivered, QC'd only
@@ -139,8 +149,14 @@ workflow ILLUMINA_QC {
         .map { _meta, demux -> readShareTable( demux, 'Undetermined' ) }
         .collectFile( name: 'demux_read_share_mqc.tsv' )
 
+    // PhiX is usually spiked in without an index, so it lands in Undetermined;
+    // its share (from InterOp) tells a spike-in apart from a sample-sheet problem.
     ch_demux_summary = ch_demux
-        .map { meta, demux -> demuxSummaryTable( meta.run, demux, max_undetermined, 'BCL Convert Demultiplex_Stats.csv', 'Undetermined', 'ILLUMINA_QC' ) }
+        .combine( INTEROP_RUN_METRICS.out.metrics.map { _meta, csv -> [ phixAligned( csv ) ] } )
+        .map { meta, demux, phix ->
+            def with_phix = withPhix( demux, phix, 'aligned to PhiX by the instrument (InterOp % Aligned; usually in Undetermined, as PhiX is spiked in without an index)' )
+            demuxSummaryTable( meta.run, with_phix, max_undetermined, 'BCL Convert Demultiplex_Stats.csv', 'Undetermined', 'ILLUMINA_QC' )
+        }
         .collectFile( name: 'demux_summary_mqc.tsv' )
 
     ch_unknown_barcodes = ch_demux

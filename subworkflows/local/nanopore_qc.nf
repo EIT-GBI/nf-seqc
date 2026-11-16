@@ -567,8 +567,10 @@ workflow NANOPORE_QC {
     ch_sample_ids = ch_bam.toList().map { samples -> ontSampleIds( samples ) }
     ch_summaries = ch_run
         .flatMap { meta, run_dir ->
-            ontSequencingSummaries( run_dir ).collect { flowcell, fs, reports, offsets ->
-                tuple( meta.subMap( [ 'run', 'platform' ] ) + [ id: flowcell, flowcell: flowcell, offsets: offsets ], fs, reports )
+            def flowcells = ontSequencingSummaries( run_dir )
+            flowcells.collect { flowcell, fs, reports, offsets ->
+                def fc_meta = [ id: flowcell, flowcell: flowcell, offsets: offsets, prefix_rows: flowcells.size() > 1 ]
+                tuple( meta.subMap( [ 'run', 'platform' ] ) + fc_meta, fs, reports )
             }
         }
         .combine( ch_sample_ids )

@@ -366,25 +366,36 @@ def revioCellMetrics( cell, String movie, String well_sample ) {
     ]
 }
 
-// One PACBIO_CELL_QC input per SMRT Cell in the Revio layout: [ meta, zip,
-// zmw_metrics ], meta.id the well (as the Run Metrics table names the cell)
-// and meta.samples each barcode's sample id. A missing file is [], which the
-// module skips.
+// The one PACBIO_CELL_QC input for the run's SMRT Cells in the Revio layout:
+// [ meta, reports_zips, zmw_metrics ]. meta.cells lists each cell (its well,
+// as the Run Metrics table names it), the names of its two files (null when
+// missing, which the module skips) and each barcode's sample id. null when
+// no BAM is in the Revio layout.
 def revioCellInputs( List samples ) {
-    return samples.findAll { meta, bam -> meta.movie && revioCell( bam ) }
+    def cells = samples.findAll { meta, bam -> meta.movie && revioCell( bam ) }
         .groupBy { meta, bam -> [ meta.well, meta.movie, revioCell( bam ) ] }
         .collect { key, rows ->
             def movie = key[1]
             def stats = key[2].resolve('statistics')
             def zip   = stats.resolve("${movie}.reports.zip")
             def zmw   = stats.resolve("${movie}.zmw_metrics.csv.gz")
-            def meta  = rows[0][0].subMap( [ 'run', 'platform' ] ) + [
-                id:      key[0],
-                samples: rows.findAll { m, _bam -> m.barcode }.collectEntries { m, _bam -> [ ( m.barcode ): m.id ] },
+            [
+                cell:        key[0],
+                zip:         zip.exists() ? zip : null,
+                zmw:         zmw.exists() ? zmw : null,
+                samples:     rows.findAll { m, _bam -> m.barcode }.collectEntries { m, _bam -> [ ( m.barcode ): m.id ] },
+                meta:        rows[0][0],
             ]
-            tuple( meta, zip.exists() ? zip : [], zmw.exists() ? zmw : [] )
         }
-        .sort { t -> t[0].id }
+        .sort { c -> c.cell }
+    if ( !cells ) {
+        return null
+    }
+    def meta = cells[0].meta.subMap( [ 'run', 'platform' ] ) + [
+        id:    cells[0].meta.run,
+        cells: cells.collect { c -> [ cell: c.cell, reports_zip: c.zip?.name, zmw_metrics: c.zmw?.name, samples: c.samples ] },
+    ]
+    return tuple( meta, cells.findResults { c -> c.zip }, cells.findResults { c -> c.zmw } )
 }
 
 // One row per SMRT Cell, as MultiQC custom content. The run-level slot that
@@ -535,7 +546,10 @@ workflow PACBIO_QC {
         .collectFile( name: 'pacbio_sample_metrics_mqc.tsv' )
 
     // Plots and tables from what SMRT Link's run QC report is drawn from.
-    PACBIO_CELL_QC( ch_samples.flatMap { samples -> revioCellInputs( samples ) } )
+    PACBIO_CELL_QC( ch_samples.flatMap { samples ->
+        def input = revioCellInputs( samples )
+        input ? [ input ] : []
+    } )
 
     ch_qc = channel.empty()
         .mix( ch_sample_metrics )

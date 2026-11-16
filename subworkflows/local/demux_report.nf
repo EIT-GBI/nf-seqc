@@ -4,7 +4,8 @@
 // map demuxSummary() returns, and gets the same MultiQC tables.
 //
 //   - General Statistics: % Reads and Loading per sample
-//   - Demultiplexing: one run-level row, the unassigned share and its level
+//   - Demultiplexing: one run-level row, the unassigned share and its level,
+//     and the PhiX spike-in share where the platform reports it
 //   - Undetermined barcodes: the commonest index pairs that matched no sample
 //
 
@@ -22,7 +23,8 @@ def loadingBgcols() { return [ under: 'rgba(70,130,180,0.4)', optimal: 'rgba(0,1
 // as [ lane:, index:, reads: ] maps (empty when it lists none). Returns
 // [ samples, unassigned, total, even, barcodes ], or null when there is nothing
 // to report on. `even` is one sample's share of all reads if the assigned reads
-// were split evenly.
+// were split evenly. A platform that knows the PhiX spike-in share adds
+// phix_pct (% of all reads) and phix_source to the map (see withPhix()).
 def demuxSummary( Map samples, long unassigned, List barcodes ) {
     def assigned = samples.values().sum() ?: 0L
     def total    = assigned + unassigned
@@ -36,6 +38,12 @@ def demuxSummary( Map samples, long unassigned, List barcodes ) {
         even:       100.0 * assigned / total / samples.size(),
         barcodes:   barcodes,
     ]
+}
+
+// The demux map with the PhiX spike-in's share of all reads, and where it came
+// from, for the Demultiplexing table. pct null (unknown) leaves it unchanged.
+def withPhix( demux, pct, String source ) {
+    return demux && pct != null ? demux + [ phix_pct: pct as double, phix_source: source ] : demux
 }
 
 // An index pair as one string, i7+i5; a single-index run has no second index.
@@ -88,8 +96,10 @@ def readShareTable( demux, String unassigned_label ) {
 def demuxSummaryTable( run_id, demux, max_undetermined, String source, String unassigned_label, String caller ) {
     def pct_unassigned = 100.0 * demux.unassigned / demux.total
     def level = pct_unassigned > max_undetermined ? 'high' : 'ok'
+    def phix = demux.phix_pct
     if ( level == 'high' ) {
-        log.warn "${caller}: ${String.format('%.1f', pct_unassigned)}% of reads in ${run_id} are ${unassigned_label} (above --max_undetermined ${max_undetermined}%)."
+        def phix_note = phix != null ? "; PhiX is ${String.format('%.1f', phix)}% of all reads" : ''
+        log.warn "${caller}: ${String.format('%.1f', pct_unassigned)}% of reads in ${run_id} are ${unassigned_label} (above --max_undetermined ${max_undetermined}%)${phix_note}."
     }
     def counts = [ under: 0, optimal: 0, over: 0 ]
     demux.samples.each { _id, n -> counts[ sampleLoading( demux, n ) ] += 1 }
@@ -114,7 +124,16 @@ def demuxSummaryTable( run_id, demux, max_undetermined, String source, String un
         "#         title: '${unassigned_label} level'",
         "#         scale: false",
         "#         description: 'high above ${max_undetermined}% (--max_undetermined)'",
-    ] + bgcols( [ ok: loadingBgcols().optimal, high: loadingBgcols().over ] ) + [
+    ] + bgcols( [ ok: loadingBgcols().optimal, high: loadingBgcols().over ] ) + ( phix == null ? [] : [
+        "#     pct_phix:",
+        "#         title: 'PhiX'",
+        "#         scale: false",
+        "#         description: 'Share of all reads that are PhiX spike-in, ${demux.phix_source}. A high ${unassigned_label} share with PhiX close to it is mostly spike-in; with little PhiX it points to the sample sheet.'",
+        "#         suffix: '%'",
+        "#         min: 0",
+        "#         max: 100",
+        "#         format: '{:,.2f}'",
+    ] ) + [
         "#     samples:",
         "#         title: 'Samples'",
         "#         scale: false",
@@ -133,8 +152,8 @@ def demuxSummaryTable( run_id, demux, max_undetermined, String source, String un
         "#         scale: false",
         "#         description: 'Samples over twice an even split'",
         "#         format: '{:,.0f}'",
-        "Run\tpct_unassigned\tunassigned_level\tsamples\tunder\toptimal\tover",
-        "${run_id}\t${pct_unassigned}\t${level}\t${demux.samples.size()}\t${counts.under}\t${counts.optimal}\t${counts.over}",
+        "Run\tpct_unassigned\tunassigned_level" + ( phix == null ? '' : '\tpct_phix' ) + "\tsamples\tunder\toptimal\tover",
+        "${run_id}\t${pct_unassigned}\t${level}" + ( phix == null ? '' : "\t${phix}" ) + "\t${demux.samples.size()}\t${counts.under}\t${counts.optimal}\t${counts.over}",
     ]
     return header.join('\n') + '\n'
 }
@@ -147,7 +166,7 @@ def demuxSummaryTable( run_id, demux, max_undetermined, String source, String un
 //
 // A barcode with at least as many reads as the Loading column's `under`
 // cut-off (half an even split) is as big as a real sample, so it is flagged
-// as a likely missing sample, and warned about in the Nextflow log (prefixed
+// as missing from the sample sheet, and warned about in the Nextflow log (prefixed
 // with `caller`).
 def unknownBarcodesTable( demux, String source, String unassigned_label, int per_lane, String caller ) {
     if ( !demux.barcodes ) {
@@ -192,14 +211,14 @@ def unknownBarcodesTable( demux, String source, String unassigned_label, int per
         "#     flag:",
         "#         title: 'Flag'",
         "#         scale: false",
-        "#         description: 'likely missing sample: at least ${String.format('%.2f', sample_sized)}% of all reads, as many as an under-loaded sample'",
-    ] + bgcols( [ 'likely missing sample': loadingBgcols().over ] ) + [
+        "#         description: 'missing from samplesheet: at least ${String.format('%.2f', sample_sized)}% of all reads, as many as an under-loaded sample, so likely a sample left out of the sample sheet or entered with the wrong index'",
+    ] + bgcols( [ 'missing from samplesheet': loadingBgcols().over ] ) + [
         "Barcode\treads\tpct_total\tpct_unassigned\tflag",
     ]
     def lines = rows.collect { b ->
         def pct_total      = 100.0 * b.reads / demux.total
         def pct_unassigned = demux.unassigned ? 100.0 * b.reads / demux.unassigned : 0
-        def flag           = pct_total >= sample_sized ? 'likely missing sample' : ''
+        def flag           = pct_total >= sample_sized ? 'missing from samplesheet' : ''
         "L${b.lane} ${b.index}\t${b.reads}\t${pct_total}\t${pct_unassigned}\t${flag}"
     }
     return ( header + lines ).join('\n') + '\n'
