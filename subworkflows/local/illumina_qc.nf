@@ -84,18 +84,21 @@ def demuxReads( stats ) {
 
 // The share of PF reads the instrument aligned to PhiX, from
 // INTEROP_RUN_METRICS' one-row CSV ('PhixAligned (%)', InterOp's % Aligned).
-// null (no PhiX column) when the CSV is empty (stub), or when the instrument
-// did not align to PhiX at all, which shows as a PhiX error rate of n/a: the
-// NextSeq 2000 writes no error metrics and reports 0% aligned even on runs
-// spiked with PhiX (SEQN2K000105, checked 2026-11-18), so 0 would mislead.
+// null (no PhiX column) when the CSV is empty (stub) or % Aligned is n/a, and
+// when the instrument did not align to PhiX at all: 0% aligned with a PhiX
+// error rate of n/a. The NextSeq 2000 writes no error metrics and reports 0%
+// aligned even on runs spiked with PhiX (SEQN2K000105, checked 2026-11-18),
+// so that 0 would mislead. A non-zero % Aligned is kept even without an error
+// rate (InterOp takes them from different files).
 def phixAligned( csv ) {
     def rows = csv.size() ? csv.splitCsv( header: true ) : []
-    if ( !rows ) {
+    def aligned = rows ? rows[0]['PhixAligned (%)']?.toString() : null
+    def error   = rows ? rows[0]['PhixError (%)']?.toString() : null
+    if ( !aligned?.isDouble() ) {
         return null
     }
-    def aligned = rows[0]['PhixAligned (%)']?.toString()
-    def error   = rows[0]['PhixError (%)']?.toString()
-    return aligned?.isDouble() && error?.isDouble() ? aligned.toDouble() : null
+    def pct = aligned.toDouble()
+    return pct == 0 && !error?.isDouble() ? null : pct
 }
 
 // Reads BCL Convert could not assign to a sample: always delivered, QC'd only
