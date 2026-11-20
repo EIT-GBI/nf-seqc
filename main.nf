@@ -14,6 +14,7 @@ include { NANOPORE_QC; nanoporeUnfinished } from './subworkflows/local/nanopore_
 include { PACBIO_QC; revioUnfinishedCells } from './subworkflows/local/pacbio_qc.nf'
 include { BATCH_REPORT } from './subworkflows/local/batch_report.nf'
 include { COPY_READS   } from './modules/local/copy_reads/main.nf'
+include { SAMPLE_METADATA } from './modules/local/sample_metadata/main.nf'
 include { BAM_CHECK    } from './modules/local/bam_check/main.nf'
 include { bamCheckRow; bamCheckWarnings; bamCheckTable } from './subworkflows/local/bam_check_report.nf'
 
@@ -284,6 +285,11 @@ workflow {
     ch_qc       = ch_qc.mix( ch_bam_check )
     ch_versions = ch_versions.mix( BAM_CHECK.out.versions_samtools )
 
+    // The run's sample sheet for scientists: one row per sample, as the
+    // platform's extractor reads it from the run folder.
+    SAMPLE_METADATA( ch_run )
+    ch_versions = ch_versions.mix( SAMPLE_METADATA.out.versions_python )
+
     BATCH_REPORT( ch_qc, ch_versions, channel.value(run_id), multiqc_config )
 
     // Publish the [meta, files] channels as-is. Two traps to be aware of, both
@@ -304,6 +310,7 @@ workflow {
     barcoding = ch_barcoding
     metrics  = ch_metrics
     report   = BATCH_REPORT.out.report.mix( ch_reports )
+    samplesheet = SAMPLE_METADATA.out.samplesheet
     versions = BATCH_REPORT.out.versions
 }
 
@@ -322,6 +329,11 @@ output {
     }
     // The MultiQC report, and on AVITI Element's own <run>_QC.html.
     report {
+        path '.'
+    }
+    // <run>_samplesheet.csv: at the top with the report, as scientists use it
+    // to find which sample is which.
+    samplesheet {
         path '.'
     }
     qc {

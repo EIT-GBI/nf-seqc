@@ -1,9 +1,11 @@
 # Sample metadata extractors
 
-Standalone scripts that read the run folders the instruments write and produce
-one CSV per batch with **one row per sample**: name, barcode/index and the
-run-level details. Not part of the Nextflow pipeline; run them by hand.
-Python 3.8+, standard library only.
+Scripts that read the run folders the instruments write and produce one CSV
+per batch with **one row per sample**: name, barcode/index and the run-level
+details. The pipeline runs the platform's script on every run
+(`SAMPLE_METADATA`) and publishes its table as `<run>_samplesheet.csv` at the
+top of the results folder. They also work standalone, by hand, from
+`resources/usr/bin/`. Python 3.8+, standard library only.
 
 | Script | Platform | Reads |
 | --- | --- | --- |
@@ -16,10 +18,10 @@ All four take any mix of run folders, files and glob patterns, and `-o` for the
 output CSV:
 
 ```bash
-python3 illumina_sample_metadata.py /mnt/instrument-prep-zone/sequencing/illumina_nextseq_VH02427/2026/261112_* -o nextseq.csv
-python3 aviti_sample_metadata.py   /mnt/instrument-prep-zone/sequencing/element_aviti_AV252906/2026/20260924_* -o aviti.csv
-python3 nanopore_sample_metadata.py <experiment_dir> -o nanopore.csv
-python3 pacbio_sample_metadata.py  <revio_run_dir> -o revio.csv
+python3 resources/usr/bin/illumina_sample_metadata.py /mnt/instrument-prep-zone/sequencing/illumina_nextseq_VH02427/2026/261112_* -o nextseq.csv
+python3 resources/usr/bin/aviti_sample_metadata.py   /mnt/instrument-prep-zone/sequencing/element_aviti_AV252906/2026/20260924_* -o aviti.csv
+python3 resources/usr/bin/nanopore_sample_metadata.py <experiment_dir> -o nanopore.csv
+python3 resources/usr/bin/pacbio_sample_metadata.py  <revio_run_dir> -o revio.csv
 ```
 
 Platform notes:

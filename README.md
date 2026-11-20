@@ -55,6 +55,9 @@ else is in `qc/`:
 <run>/
 ├── <run>_multiqc_report.html     the QC report for the whole run
 ├── <run>_QC.html                 AVITI only: Element's own run report
+├── <run>_samplesheet.csv         one row per sample: name, barcode/index, run
+│                                 details (from the sample sheet, run manifest,
+│                                 Revio metadata XML or MinKNOW sample sheet)
 ├── <sample>…fastq.gz             Illumina, AVITI
 ├── <sample>.bam                  Nanopore (uBAM, keeps modified-base tags)
 ├── <sample>.hifi_reads.bam       Revio, with its .pbi index (+ unassigned_<well>)
@@ -215,7 +218,7 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 - `main.nf` — platform detection, dispatch, and the `output {}` publish targets
 - `subworkflows/local/` — one subworkflow per platform, plus `batch_report.nf`
 - `modules/<tool>/` — git submodules from `nf-mod-*` repos
-- `modules/local/` — tools with no `nf-mod-*` repo yet (bases2fastq, multiqc, ont_summary_stats, pacbio_cell_qc, bam_check)
+- `modules/local/` — tools with no `nf-mod-*` repo yet (bases2fastq, multiqc, ont_summary_stats, pacbio_cell_qc, bam_check, sample_metadata)
 - `conf/` — `base.config` (resources), `test.config`. Container images are set in
   `nextflow.config`: each released module's `conf/module.config` is included, and
   local-module images are pinned in its `process {}` block. Nothing uses `:latest`
