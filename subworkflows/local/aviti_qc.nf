@@ -70,12 +70,17 @@ def bases2fastqReads( run_stats ) {
 // which MultiQC (1.35) keys on the index pair alone: when the flow cell is
 // split into two independent lanes that reuse the same indexes, the lane 2
 // sample got no row and its polonies were added to the lane 1 sample's
-// (SEQEBA000015: 7 of 53 samples missing; lab feedback 2026-11-23).
+// (SEQEBA000015: 10 of 53 samples had no row; lab feedback 2026-11-23).
 // Occurrences give the lane and the concatenated I1+I2; RunManifest.json gives
-// the split, matched on sample, lane and sequence. Without a match the whole
-// sequence goes in Index 1. Rows run lane by lane in manifest order. PhiX
-// keeps its rows, one per index and lane: it is in Element's table too.
-// null when RunStats.json has no Occurrences (e.g. a stub run's empty file).
+// the split, matched on sample, lane and sequence. Without an exact match
+// (e.g. an index stored reverse-complemented, or no manifest) the sequence is
+// split at the sample's I1 length from the manifest, else the run's, and a
+// warning names the rows; with no manifest at all it all goes in Index 1. An
+// occurrence without a Lane counts as lane 1. Rows run lane by lane in
+// manifest order, so a sample sequenced on both lanes (1+2) has a row in
+// each. PhiX keeps its rows, one per index and lane: it is in Element's
+// table too. null when RunStats.json has no Occurrences (e.g. a stub run's
+// empty file).
 def indexAssignmentTable( run_stats, run_manifest ) {
     if ( !run_stats.size() ) {
         return null
@@ -83,24 +88,40 @@ def indexAssignmentTable( run_stats, run_manifest ) {
     def stats    = new groovy.json.JsonSlurper().parse( run_stats.toFile() )
     def manifest = run_manifest?.size() ? new groovy.json.JsonSlurper().parse( run_manifest.toFile() ) : [:]
     def indexes  = [:]
+    def i1_len   = [:]
     def order    = [:]
     ( manifest.Samples ?: [] ).eachWithIndex { s, i ->
-        order[ s.SampleName ] = s.SampleNumber ?: i
+        order[ s.SampleName ] = s.SampleNumber != null ? s.SampleNumber as int : i
         ( s.Indexes ?: [] ).each { ix ->
-            indexes[ "${s.SampleName}\t${ix.Lane}\t${ix.Index1 ?: ''}${ix.Index2 ?: ''}".toString() ] = [ ix.Index1 ?: '', ix.Index2 ?: '' ]
+            def i1 = ix.Index1 ?: ''
+            def i2 = ix.Index2 ?: ''
+            indexes[ "${s.SampleName}\t${ix.Lane}\t${i1}${i2}".toString() ] = [ i1, i2 ]
+            i1_len.putIfAbsent( s.SampleName, i1.length() )
         }
     }
-    def lane_total = ( stats.Lanes ?: [] ).collectEntries { l -> [ ( l.Lane as int ): ( l.NumPoloniesBeforeTrimming ?: l.NumPolonies ?: 0 ) as long ] }
+    def run_i1_len = i1_len ? i1_len.values().countBy { n -> n }.max { e -> e.value }.key : null
+    def lane_total = ( stats.Lanes ?: [] ).collectEntries { l -> [ ( ( l.Lane ?: 1 ) as int ): ( l.NumPoloniesBeforeTrimming ?: l.NumPolonies ?: 0 ) as long ] }
     def run_total  = ( stats.NumPoloniesBeforeTrimming ?: stats.NumPolonies ?: 0 ) as long
+    def unmatched  = []
     def rows = ( stats.SampleStats ?: [] ).collectMany { s ->
         ( s.Occurrences ?: [] ).collect { o ->
-            def seq = o.ExpectedSequence ?: ''
-            def lane = o.Lane as int
-            def ix  = indexes[ "${s.SampleName}\t${lane}\t${seq}".toString() ] ?: [ seq, '' ]
+            def seq  = o.ExpectedSequence ?: ''
+            def lane = ( o.Lane ?: 1 ) as int
+            def ix   = indexes[ "${s.SampleName}\t${lane}\t${seq}".toString() ]
+            if ( ix == null ) {
+                def n = i1_len.containsKey( s.SampleName ) ? i1_len[ s.SampleName ] : run_i1_len
+                ix = n != null && n < seq.length() ? [ seq.substring( 0, n ), seq.substring( n ) ] : [ seq, '' ]
+                if ( manifest ) {
+                    unmatched << "${s.SampleName} L${lane} ${seq}"
+                }
+            }
             [ sample: s.SampleName, lane: lane, i1: ix[0], i2: ix[1],
               polonies: ( o.NumPoloniesBeforeTrimming ?: o.NumPolonies ?: 0 ) as long,
-              order: order[ s.SampleName ] ?: s.SampleNumber ?: 0 ]
+              order: order.containsKey( s.SampleName ) ? order[ s.SampleName ] : ( s.SampleNumber ?: 0 ) as int ]
         }
+    }
+    if ( unmatched ) {
+        log.warn "AVITI_QC: ${unmatched.size()} index sequence(s) in RunStats.json match no index in RunManifest.json; Index 1/2 split at the manifest's I1 length: ${unmatched.take( 5 ).join( ', ' )}${unmatched.size() > 5 ? ', ...' : ''}"
     }
     if ( !rows ) {
         return null
@@ -111,7 +132,7 @@ def indexAssignmentTable( run_stats, run_manifest ) {
     def header = [
         "# id: 'bases2fastq_index_assignment'",
         "# section_name: 'Index Assignment Metrics'",
-        "# description: 'Polonies assigned to each sample in each lane, by index pair, from bases2fastq RunStats.json. One row per sample and lane, so samples sharing indexes in different lanes each get theirs.'",
+        "# description: 'Polonies assigned to each sample in each lane, by index pair, from bases2fastq RunStats.json. One row per sample per lane: a sample sequenced on both lanes (1+2) appears twice, and samples sharing indexes in different lanes each get their own row.'",
         "# plot_type: 'table'",
         "# pconfig:",
         "#     id: 'bases2fastq_index_assignment_table'",
@@ -143,7 +164,7 @@ def indexAssignmentTable( run_stats, run_manifest ) {
         "#         format: '{:,.2f}'",
         "#     pct_run:",
         "#         title: '% of Run'",
-        "#         description: 'Share of all polonies in the run, both lanes'",
+        "#         description: 'Share of all polonies in the run, every lane'",
         "#         suffix: '%'",
         "#         min: 0",
         "#         scale: 'RdYlGn'",
