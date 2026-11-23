@@ -166,19 +166,20 @@ but reported as a sample only with `--include_failed`.
 
 ### Illumina run metrics
 
-The Illumina branch mirrors
-[Automate-Seq-Run-Metrics-Collection](https://github.com/EIT-GBI/Automate-Seq-Run-Metrics-Collection):
-same metric set, same 24 column names, same %Occupied vs %PF tile plot, so rows
-from either tool concatenate into one log. It reads InterOp via Illumina's Python
-bindings plus `RunParameters.xml` and `PrimaryAnalysisMetrics.csv` (the
+The Illumina run metrics were ported from
+[Automate-Seq-Run-Metrics-Collection](https://github.com/EIT-GBI/Automate-Seq-Run-Metrics-Collection),
+a cron collector that is no longer used (2026-11): same metric set and 24
+columns. It reads InterOp via Illumina's Python bindings plus
+`RunParameters.xml` and `PrimaryAnalysisMetrics.csv` (the
 `INTEROP_RUN_METRICS` process from
 [nf-mod-interop](https://github.com/EIT-GBI/nf-mod-interop)), and emits:
 
-- `metrics/<run>.run_metrics.csv` — header + one row, the log row for this run
+- `qc/<run>.run_metrics.csv` — header + one row for this run, so CSVs from
+  several runs concatenate
 - `qc/<run>_run_metrics_mqc.tsv` — the same table as a MultiQC section
 - `qc/<run>_occupied_vs_pf_mqc.png` — the loading plot, embedded in the report
 
-Differences, both forced by running under Nextflow rather than cron:
+Differences from that tool, forced by running under Nextflow rather than cron:
 
 - That tool appends to one central CSV across runs; here one pipeline run is one
   sequencing run, so a single-row CSV is emitted per run. Appending to a shared
