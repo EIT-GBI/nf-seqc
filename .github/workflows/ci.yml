@@ -135,6 +135,13 @@ jobs:
           if [ "${{ matrix.profile }}" = test_nanopore ] && find "$out" -name '*.fastq.gz' | grep -q .; then
             echo "::error::Nanopore published FASTQ; it delivers BAM only"; fail=1
           fi
+          # PacBio Run Metrics: Loading sits right after P2 in the header, and
+          # every row has as many fields as the header (the stub cells load ok)
+          if [ "${{ matrix.profile }}" = test_pacbio ]; then
+            tsv="$out/qc/pacbio_run_metrics_mqc.tsv"
+            grep -v '^#' "$tsv" | head -1 | grep -qP '\tp2\tloading\t' || { echo "::error::no loading column after p2 in $tsv"; fail=1; }
+            grep -v '^#' "$tsv" | awk -F'\t' 'NR == 1 { n = NF; next } NF != n || $7 != "ok" { bad = 1 } END { exit bad }' || { echo "::error::PacBio Run Metrics rows misaligned or not ok"; fail=1; }
+          fi
           [ "$fail" = 0 ] || { find "$out" | sort; exit 1; }
 
       # No --outdir here: it would win over the path built from

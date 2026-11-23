@@ -44,7 +44,7 @@ nextflow run . -resume
 nextflow lint main.nf subworkflows/local/ modules/local/ nextflow.config conf/
 ```
 
-Requires Nextflow `>=25.04.0` (manifest-enforced); developed against 25.10.2; CI and the README's tokyo batch script pin 26.04.7 (`module load nextflow/26.04.7`, the default module on tokyo; 26.04.6 is still installed). Keep the two in step.
+Requires Nextflow `>=25.04.0` (manifest-enforced); developed against 25.10.2; CI and the README's tokyo batch script pin 26.04.7 (`module load nextflow/26.04.7`, by name, as tokyo's default module moves; 26.04.6 is still installed). Keep the two in step. All four platforms passed real mini-runs on 26.04.7 on 2026-11-23 (EIT-GBI/nf-seqc#22).
 
 Style rules the language server enforces, all of which this repo already follows — keep new code consistent:
 

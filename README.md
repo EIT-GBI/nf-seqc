@@ -93,8 +93,9 @@ by itself; don't add `singularity` to it. Run folders are under
 
 On **sandpit-tokyo**, Apptainer exists only on the compute nodes, so the
 Nextflow head job must itself run as a SLURM job. Nextflow (with its Java)
-comes from the shared module. Load the version CI tests,
-`module load nextflow/26.04.7`, rather than whatever the default is. A batch
+comes from the shared module. Load the version CI tests by name,
+`module load nextflow/26.04.7`: it is the default today, but the default
+moves when a new module is installed. A batch
 script needs a login shell (`#!/bin/bash -l`) for `module` to exist:
 
 ```bash
@@ -210,7 +211,7 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 | `--include_failed` | `false` | Nanopore: basecall `pod5_fail` too, and report the unclassified reads as a sample (they are delivered either way). PacBio failed reads are always counted per barcode (hidden General Statistics column) |
 | `--allow_incomplete` | `false` | Report even on an unfinished run: Illumina without `RTAComplete.txt`/`CopyComplete.txt`, PacBio with a SMRT Cell lacking `metadata/*.transferdone` |
 | `--max_undetermined` | `15` | Illumina, AVITI and barcoded PacBio: flag the run as high in the Demultiplexing table, plus a log warning, above this % of Undetermined (Illumina) or Unassigned (AVITI, PacBio Not Barcoded) reads |
-| `--pacbio_min_p1` | `50` | PacBio: flag a SMRT Cell as `low P1` (under-loaded) in Run Metrics, plus a log warning, below this % of productive ZMWs (ideally above 60%) |
+| `--pacbio_min_p1` | `50` | PacBio: flag a SMRT Cell as `low P1` (under-loaded) in Run Metrics, plus a log warning, below this % of productive ZMWs (the lab's threshold; P1 is ideally above 60%) |
 | `--pacbio_max_p2` | `5` | PacBio: flag a SMRT Cell as `high P2` (over-loaded) above this % of P2 ZMWs |
 | `--basecall.model` | baked-in `sup@v5.0.0` | dorado model path inside the container |
 | `--basecall.modified_bases` | `null` | e.g. `5mCG_5hmCG`, `6mA` or `4mC_5mC` (the models in the dorado image) to emit MM/ML tags. Off by default, so delivered BAMs carry **no** modification calls unless asked: an m6A assay such as DiMeLo-seq needs `6mA`. The BAM check columns in General Statistics show what the reads carry, and the log warns when calls were requested but are missing |

@@ -485,7 +485,7 @@ def revioMetricsTable( List samples, min_p1, max_p2 ) {
         "#     loading:",
         "#         title: 'Loading'",
         "#         scale: false",
-        "#         description: 'low P1 under ${min_p1}% (under-loaded; ideally above 60%), high P2 over ${max_p2}% (over-loaded)'",
+        "#         description: 'low P1 under ${min_p1}% (under-loaded), high P2 over ${max_p2}% (over-loaded)'",
     ] + bgcols( [ ok: loadingBgcols().optimal, 'low P1': loadingBgcols().under, 'high P2': loadingBgcols().over, 'low P1, high P2': loadingBgcols().over ] ) + [
         "#     hifi_reads:",
         "#         title: 'HiFi reads'",
