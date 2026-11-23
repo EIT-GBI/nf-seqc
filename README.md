@@ -93,14 +93,16 @@ by itself; don't add `singularity` to it. Run folders are under
 
 On **sandpit-tokyo**, Apptainer exists only on the compute nodes, so the
 Nextflow head job must itself run as a SLURM job. Nextflow (with its Java)
-comes from the shared module, `module load nextflow`; a batch script needs a
-login shell (`#!/bin/bash -l`) for `module` to exist:
+comes from the shared module. Load the version CI tests by name,
+`module load nextflow/26.04.7`: it is the default today, but the default
+moves when a new module is installed. A batch
+script needs a login shell (`#!/bin/bash -l`) for `module` to exist:
 
 ```bash
 #!/bin/bash -l
 #SBATCH -p cpu -c 2 --mem 8G -t 24:00:00 -J nf-seqc -o nf-seqc-%j.out
 set -euo pipefail
-module load nextflow
+module load nextflow/26.04.7
 cd ~/nf-seqc
 nextflow run . -profile cluster \
     --instrument element_aviti_AV252906 --run <run> \
@@ -152,7 +154,7 @@ with `--platform illumina|aviti|nanopore|pacbio`.
 | Illumina NextSeq | `RunInfo.xml` | already demultiplexed on-instrument, left in place | FastQC + InterOp run metrics (see below) + BCL Convert demultiplexing reports |
 | Element AVITI | `RunParameters.json` | `bases2fastq` writes FASTQ in the pipeline | FastQC + RunStats/Metrics |
 | ONT PromethION P24 | `final_summary_*.txt`, `*.pod5` | `dorado` basecalls on **GPU** to uBAM and demultiplexes; uBAM delivered, no FASTQ | per-sample reads, yield, N50 and median Q from MinKNOW's `sequencing_summary_*.txt` (its live basecalls, no BAM is read) + per-flow-cell run metrics from MinKNOW's `report_*.json` (pore scans, occupancy, live yield and N50) + barcode counts from the pipeline's demux + **Nanopore flow cell** plots (pore activity, occupancy, active channels, Q over time, temperature, bias voltage, MinKNOW warnings) and **Nanopore reads** plots per sample (pass/fail, yield over time, read length, yield by length, Q-score, Q by length, translocation speed, end reasons, barcode score) |
-| PacBio Revio | `<well>/pb_formats/*.consensusreadset.xml`, `<well>/hifi_reads/*.hifi_reads*.bam` | HiFi uBAM already final, left in place | read from the instrument's own reports, no BAM is read: per-sample HiFi reads, yield, length, QV and barcode quality (`barcodes.report.json`) + per-SMRT-Cell run metrics (P0/P1/P2, HiFi yield, N50, QV) + lima barcode counts + **PacBio SMRT Cell** plots from `reports.zip` (details table: polymerase, insert, CCS and control figures; loading; polymerase read length; base modifications) and **PacBio HiFi reads** plots from `zmw_metrics.csv.gz` and pbreports' binned barcode data (length, yield by length, quality, quality by length, passes; length and barcode quality per sample) |
+| PacBio Revio | `<well>/pb_formats/*.consensusreadset.xml`, `<well>/hifi_reads/*.hifi_reads*.bam` | HiFi uBAM already final, left in place | read from the instrument's own reports, no BAM is read: per-sample HiFi reads, yield, length, QV and barcode quality (`barcodes.report.json`) + per-SMRT-Cell run metrics (P0/P1/P2, loading flagged below `--pacbio_min_p1` / above `--pacbio_max_p2`, HiFi yield, N50, QV) + lima barcode counts + **PacBio SMRT Cell** plots from `reports.zip` (details table: polymerase, insert, CCS and control figures; loading; polymerase read length; base modifications) and **PacBio HiFi reads** plots from `zmw_metrics.csv.gz` and pbreports' binned barcode data (length, yield by length, quality, quality by length, passes; length and barcode quality per sample) |
 
 MinKNOW does not split POD5 cleanly by barcode: `pod5_pass/mixed/` holds part
 of each barcode's reads. So every POD5 folder is basecalled with the run's
@@ -164,19 +166,20 @@ but reported as a sample only with `--include_failed`.
 
 ### Illumina run metrics
 
-The Illumina branch mirrors
-[Automate-Seq-Run-Metrics-Collection](https://github.com/EIT-GBI/Automate-Seq-Run-Metrics-Collection):
-same metric set, same 24 column names, same %Occupied vs %PF tile plot, so rows
-from either tool concatenate into one log. It reads InterOp via Illumina's Python
-bindings plus `RunParameters.xml` and `PrimaryAnalysisMetrics.csv` (the
+The Illumina run metrics were ported from
+[Automate-Seq-Run-Metrics-Collection](https://github.com/EIT-GBI/Automate-Seq-Run-Metrics-Collection),
+a cron collector that is no longer used (2026-11): same metric set and 24
+columns. It reads InterOp via Illumina's Python bindings plus
+`RunParameters.xml` and `PrimaryAnalysisMetrics.csv` (the
 `INTEROP_RUN_METRICS` process from
 [nf-mod-interop](https://github.com/EIT-GBI/nf-mod-interop)), and emits:
 
-- `metrics/<run>.run_metrics.csv` — header + one row, the log row for this run
+- `qc/<run>.run_metrics.csv` — header + one row for this run, so CSVs from
+  several runs concatenate
 - `qc/<run>_run_metrics_mqc.tsv` — the same table as a MultiQC section
 - `qc/<run>_occupied_vs_pf_mqc.png` — the loading plot, embedded in the report
 
-Differences, both forced by running under Nextflow rather than cron:
+Differences from that tool, forced by running under Nextflow rather than cron:
 
 - That tool appends to one central CSV across runs; here one pipeline run is one
   sequencing run, so a single-row CSV is emitted per run. Appending to a shared
@@ -209,6 +212,8 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 | `--include_failed` | `false` | Nanopore: basecall `pod5_fail` too, and report the unclassified reads as a sample (they are delivered either way). PacBio failed reads are always counted per barcode (hidden General Statistics column) |
 | `--allow_incomplete` | `false` | Report even on an unfinished run: Illumina without `RTAComplete.txt`/`CopyComplete.txt`, PacBio with a SMRT Cell lacking `metadata/*.transferdone` |
 | `--max_undetermined` | `15` | Illumina, AVITI and barcoded PacBio: flag the run as high in the Demultiplexing table, plus a log warning, above this % of Undetermined (Illumina) or Unassigned (AVITI, PacBio Not Barcoded) reads |
+| `--pacbio_min_p1` | `50` | PacBio: flag a SMRT Cell as `low P1` (under-loaded) in Run Metrics, plus a log warning, below this % of productive ZMWs (the lab's threshold; P1 is ideally above 60%) |
+| `--pacbio_max_p2` | `5` | PacBio: flag a SMRT Cell as `high P2` (over-loaded) above this % of P2 ZMWs |
 | `--basecall.model` | baked-in `sup@v5.0.0` | dorado model path inside the container |
 | `--basecall.modified_bases` | `null` | e.g. `5mCG_5hmCG`, `6mA` or `4mC_5mC` (the models in the dorado image) to emit MM/ML tags. Off by default, so delivered BAMs carry **no** modification calls unless asked: an m6A assay such as DiMeLo-seq needs `6mA`. The BAM check columns in General Statistics show what the reads carry, and the log warns when calls were requested but are missing |
 | `--multiqc_config` | — | extra MultiQC config, applied on top of `assets/multiqc_config.yml` (report order, and hides bases2fastq plots FastQC already shows) |
