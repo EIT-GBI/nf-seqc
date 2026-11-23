@@ -64,6 +64,101 @@ def bases2fastqReads( run_stats ) {
     return withPhixReads( demux, phix as long, 'assigned to the PhiX control by bases2fastq' )
 }
 
+// Polonies per sample, lane and index pair, from RunStats.json's per-sample
+// Occurrences, as MultiQC custom content. It replaces the bases2fastq module's
+// own Index Assignment Metrics table (removed in assets/multiqc_config.yml),
+// which MultiQC (1.35) keys on the index pair alone: when the flow cell is
+// split into two independent lanes that reuse the same indexes, the lane 2
+// sample got no row and its polonies were added to the lane 1 sample's
+// (SEQEBA000015: 7 of 53 samples missing; lab feedback 2026-11-23).
+// Occurrences give the lane and the concatenated I1+I2; RunManifest.json gives
+// the split, matched on sample, lane and sequence. Without a match the whole
+// sequence goes in Index 1. Rows run lane by lane in manifest order. PhiX
+// keeps its rows, one per index and lane: it is in Element's table too.
+// null when RunStats.json has no Occurrences (e.g. a stub run's empty file).
+def indexAssignmentTable( run_stats, run_manifest ) {
+    if ( !run_stats.size() ) {
+        return null
+    }
+    def stats    = new groovy.json.JsonSlurper().parse( run_stats.toFile() )
+    def manifest = run_manifest?.size() ? new groovy.json.JsonSlurper().parse( run_manifest.toFile() ) : [:]
+    def indexes  = [:]
+    def order    = [:]
+    ( manifest.Samples ?: [] ).eachWithIndex { s, i ->
+        order[ s.SampleName ] = s.SampleNumber ?: i
+        ( s.Indexes ?: [] ).each { ix ->
+            indexes[ "${s.SampleName}\t${ix.Lane}\t${ix.Index1 ?: ''}${ix.Index2 ?: ''}".toString() ] = [ ix.Index1 ?: '', ix.Index2 ?: '' ]
+        }
+    }
+    def lane_total = ( stats.Lanes ?: [] ).collectEntries { l -> [ ( l.Lane as int ): ( l.NumPoloniesBeforeTrimming ?: l.NumPolonies ?: 0 ) as long ] }
+    def run_total  = ( stats.NumPoloniesBeforeTrimming ?: stats.NumPolonies ?: 0 ) as long
+    def rows = ( stats.SampleStats ?: [] ).collectMany { s ->
+        ( s.Occurrences ?: [] ).collect { o ->
+            def seq = o.ExpectedSequence ?: ''
+            def lane = o.Lane as int
+            def ix  = indexes[ "${s.SampleName}\t${lane}\t${seq}".toString() ] ?: [ seq, '' ]
+            [ sample: s.SampleName, lane: lane, i1: ix[0], i2: ix[1],
+              polonies: ( o.NumPoloniesBeforeTrimming ?: o.NumPolonies ?: 0 ) as long,
+              order: order[ s.SampleName ] ?: s.SampleNumber ?: 0 ]
+        }
+    }
+    if ( !rows ) {
+        return null
+    }
+    rows = rows.sort { a, b -> a.lane <=> b.lane ?: a.order <=> b.order ?: a.i1 <=> b.i1 ?: a.i2 <=> b.i2 }
+    // A sample's row name is unique per lane, except PhiX's (several indexes).
+    def per_lane = rows.countBy { r -> "${r.sample}\t${r.lane}".toString() }
+    def header = [
+        "# id: 'bases2fastq_index_assignment'",
+        "# section_name: 'Index Assignment Metrics'",
+        "# description: 'Polonies assigned to each sample in each lane, by index pair, from bases2fastq RunStats.json. One row per sample and lane, so samples sharing indexes in different lanes each get theirs.'",
+        "# plot_type: 'table'",
+        "# pconfig:",
+        "#     id: 'bases2fastq_index_assignment_table'",
+        "#     namespace: 'bases2fastq'",
+        "#     col1_header: 'Sample (lane)'",
+        "#     sort_rows: false",
+        "# headers:",
+        "#     lane:",
+        "#         title: 'Lane'",
+        "#         scale: false",
+        "#         format: '{:,.0f}'",
+        "#     index_1:",
+        "#         title: 'Index 1'",
+        "#         description: 'Sample index 1 (I1)'",
+        "#     index_2:",
+        "#         title: 'Index 2'",
+        "#         description: 'Sample index 2 (I2)'",
+        "#     polonies:",
+        "#         title: 'Assigned Polonies'",
+        "#         description: 'Polonies assigned to this sample and index pair in this lane, before trimming'",
+        "#         scale: 'RdYlGn'",
+        "#         format: '{:,.0f}'",
+        "#     pct_lane:",
+        "#         title: '% of Lane'",
+        "#         description: 'Share of all polonies in this lane'",
+        "#         suffix: '%'",
+        "#         min: 0",
+        "#         scale: 'RdYlGn'",
+        "#         format: '{:,.2f}'",
+        "#     pct_run:",
+        "#         title: '% of Run'",
+        "#         description: 'Share of all polonies in the run, both lanes'",
+        "#         suffix: '%'",
+        "#         min: 0",
+        "#         scale: 'RdYlGn'",
+        "#         format: '{:,.2f}'",
+        "Sample\tlane\tindex_1\tindex_2\tpolonies\tpct_lane\tpct_run",
+    ]
+    def lines = rows.collect { r ->
+        def name     = "${r.sample} (L${r.lane})" + ( per_lane[ "${r.sample}\t${r.lane}".toString() ] > 1 ? " ${barcodeName( r.i1, r.i2 )}" : '' )
+        def pct_lane = lane_total[ r.lane ] ? 100.0 * r.polonies / lane_total[ r.lane ] : ''
+        def pct_run  = run_total ? 100.0 * r.polonies / run_total : ''
+        "${name}\t${r.lane}\t${r.i1}\t${r.i2}\t${r.polonies}\t${pct_lane}\t${pct_run}"
+    }
+    return ( header + lines ).join('\n') + '\n'
+}
+
 workflow AVITI_QC {
 
     take:
@@ -114,6 +209,14 @@ workflow AVITI_QC {
             table ? [ table ] : []
         }
         .collectFile( name: 'demux_unknown_barcodes_mqc.tsv' )
+    ch_index_assignment = BASES2FASTQ.out.stats
+        .flatMap { _meta, stats ->
+            def files     = asFileList( stats )
+            def run_stats = files.find { f -> f.name == 'RunStats.json' }
+            def table     = run_stats ? indexAssignmentTable( run_stats, files.find { f -> f.name == 'RunManifest.json' } ) : null
+            table ? [ table ] : []
+        }
+        .collectFile( name: 'bases2fastq_index_assignment_mqc.tsv' )
 
     ch_qc = channel.empty()
         .mix( FASTQC_FASTQC.out.zip.map { _meta, zip -> zip } )
@@ -124,6 +227,7 @@ workflow AVITI_QC {
         .mix( ch_read_share )
         .mix( ch_demux_summary )
         .mix( ch_unknown_barcodes )
+        .mix( ch_index_assignment )
 
     ch_versions = ch_versions
         .mix( FASTQC_FASTQC.out.versions_fastqc )
