@@ -21,7 +21,7 @@
 //
 
 include { PACBIO_CELL_QC } from '../../modules/local/pacbio_cell_qc/main.nf'
-include { demuxSummary; readShareTable; demuxSummaryTable } from './demux_report.nf'
+include { demuxSummary; readShareTable; demuxSummaryTable; bgcols; loadingBgcols } from './demux_report.nf'
 
 // <movie>.<kind>[.<barcode>].bam, kind hifi_reads or fail_reads; barcode is
 // e.g. bc2053, bc1001--bc1002, or unassigned. null for any other name.
@@ -409,10 +409,34 @@ def revioCellInputs( List samples ) {
     return tuple( meta, cells.findResults { c -> c.zip }, cells.findResults { c -> c.zmw } )
 }
 
+// A SMRT Cell's loading level from its P1 and P2 shares (numbers, or '' when
+// the loading report lacks them): 'low P1' below min_p1 (under-loaded), 'high
+// P2' above max_p2 (over-loaded: more than one polymerase per ZMW), both, or
+// 'ok'. '' when neither share is known. Thresholds from the lab (Melissa,
+// 2026-11-23): P1 should ideally be above 60%; flag under 50%, and P2 over 5%.
+def revioLoadingLevel( p1, p2, min_p1, max_p2 ) {
+    if ( p1 == '' && p2 == '' ) {
+        return ''
+    }
+    def flags = []
+    if ( p1 != '' && p1 < min_p1 ) {
+        flags << 'low P1'
+    }
+    if ( p2 != '' && p2 > max_p2 ) {
+        flags << 'high P2'
+    }
+    return flags ? flags.join(', ') : 'ok'
+}
+
+// A share for a log message: '37.8%', or 'n/a' for ''.
+def pct( value ) {
+    return value == '' ? 'n/a' : String.format( '%.1f%%', value as double )
+}
+
 // One row per SMRT Cell, as MultiQC custom content. The run-level slot that
-// the InterOp table fills for Illumina. No loading flag yet: P1 is shown, and
-// a threshold waits for the lab to say what under-loaded means on our Revio.
-def revioMetricsTable( List samples ) {
+// the InterOp table fills for Illumina. Loading is flagged from P1 and P2
+// (revioLoadingLevel()), with a log warning per flagged cell.
+def revioMetricsTable( List samples, min_p1, max_p2 ) {
     def cells = samples.findAll { meta, bam -> meta.movie && revioCell( bam ) }
         .collect { meta, bam -> [ well: meta.well, cell: revioCell( bam ), movie: meta.movie ] }
         .unique { c -> [ c.well, c.movie ] }
@@ -458,6 +482,11 @@ def revioMetricsTable( List samples ) {
         "#         min: 0",
         "#         max: 100",
         "#         format: '{:,.1f}'",
+        "#     loading:",
+        "#         title: 'Loading'",
+        "#         scale: false",
+        "#         description: 'low P1 under ${min_p1}% (under-loaded; ideally above 60%), high P2 over ${max_p2}% (over-loaded)'",
+    ] + bgcols( [ ok: loadingBgcols().optimal, 'low P1': loadingBgcols().under, 'high P2': loadingBgcols().over, 'low P1, high P2': loadingBgcols().over ] ) + [
         "#     hifi_reads:",
         "#         title: 'HiFi reads'",
         "#         format: '{:,.0f}'",
@@ -483,12 +512,19 @@ def revioMetricsTable( List samples ) {
         "#         min: 0",
         "#         max: 100",
         "#         format: '{:,.1f}'",
-        "Cell\twell_sample\tmovie\tp0\tp1\tp2\thifi_reads\thifi_yield\tmean_length\tn50\tmean_qv\tq30",
+        "Cell\twell_sample\tmovie\tp0\tp1\tp2\tloading\thifi_reads\thifi_yield\tmean_length\tn50\tmean_qv\tq30",
     ]
     def names = revioCellNames( cells.collect { c -> [ c.well, c.movie ] } )
     def lines = cells.collect { c ->
+        def name = names[ [ c.well, c.movie ] ]
         def m = revioCellMetrics( c.cell, c.movie, revioSampleNames( c.cell, c.movie ).well_sample )
-        ( [ names[ [ c.well, c.movie ] ] ] + m.values() ).join('\t')
+        def level = revioLoadingLevel( m.p1, m.p2, min_p1, max_p2 )
+        if ( level && level != 'ok' ) {
+            log.warn "PACBIO_QC: SMRT Cell ${name} is ${level}: P1 ${pct( m.p1 )}, P2 ${pct( m.p2 )} (--pacbio_min_p1 ${min_p1}, --pacbio_max_p2 ${max_p2})."
+        }
+        def values = m.values() as List
+        def at = ( m.keySet() as List ).indexOf( 'p2' ) + 1
+        ( [ name ] + values.take( at ) + [ level ] + values.drop( at ) ).join('\t')
     }
     return ( header + lines ).join('\n') + '\n'
 }
@@ -499,6 +535,8 @@ workflow PACBIO_QC {
     ch_run           // channel: [ val(meta), path(run_dir) ]
     bam_dir          // file or null: --bam_dir, where the HiFi BAM live if not in the run dir
     max_undetermined // number: --max_undetermined, % of reads Unassigned
+    min_p1           // number: --pacbio_min_p1, % of ZMWs productive below which a cell is under-loaded
+    max_p2           // number: --pacbio_max_p2, % of ZMWs in P2 above which a cell is over-loaded
 
     main:
     // One BAM per SMRT Cell, or per barcode on a barcoded cell. Collected as
@@ -545,7 +583,7 @@ workflow PACBIO_QC {
 
     ch_run_metrics = ch_samples
         .flatMap { samples ->
-            def table = revioMetricsTable( samples )
+            def table = revioMetricsTable( samples, min_p1, max_p2 )
             table ? [ table ] : []
         }
         .collectFile( name: 'pacbio_run_metrics_mqc.tsv' )

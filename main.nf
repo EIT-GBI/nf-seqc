@@ -197,6 +197,8 @@ workflow {
     // Likewise a number: "2" compares with a BigDecimal without error, and
     // always false
     def max_undetermined = params.max_undetermined as BigDecimal
+    def pacbio_min_p1    = params.pacbio_min_p1 as BigDecimal
+    def pacbio_max_p2    = params.pacbio_max_p2 as BigDecimal
 
     ch_run = channel.value( tuple( [ id: run_id, run: run_id, platform: platform ], run_dir ) )
 
@@ -244,7 +246,7 @@ workflow {
     else if ( platform == 'pacbio' ) {
         def unfinished = revioUnfinishedCells( bam_dir ?: run_dir ).collect { cell -> "${cell}/metadata/*.transferdone".toString() }
         requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
-        PACBIO_QC( ch_run, bam_dir, max_undetermined )
+        PACBIO_QC( ch_run, bam_dir, max_undetermined, pacbio_min_p1, pacbio_max_p2 )
         // The HiFi BAM are the instrument's, so copy them to make them
         // publishable, with their PacBio index (.bam.pbi) where there is one,
         // renamed after the sample: <sample>.hifi_reads.bam. The instrument's
