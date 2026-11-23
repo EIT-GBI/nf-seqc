@@ -56,6 +56,10 @@ remove_sections:
   - n_content          # = fastqc_per_base_n_content
   - adapter_content    # = fastqc_adapter_content
   - gc_histogram       # = fastqc_per_sequence_gc_content
+  # Keyed on the index pair alone, so it loses a sample, and adds its
+  # polonies to another's, when two lanes reuse the same indexes. Replaced by
+  # bases2fastq_index_assignment (indexAssignmentTable() in aviti_qc.nf).
+  - index_assignment_metrics
 
 # The occupancy plot is a *_mqc.png, whose section id and title would
 # otherwise come from its file name and so change with every run
@@ -96,6 +100,10 @@ report_section_order:
     order: 980
   bases2fastq:
     order: 990
+  # Our per-lane replacement for bases2fastq's Index Assignment Metrics,
+  # straight after the bases2fastq module.
+  bases2fastq_index_assignment:
+    order: 989
   pacbio_run_metrics:
     order: 990
   nanopore_run_metrics:
