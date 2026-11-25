@@ -150,7 +150,9 @@ jobs:
         if: matrix.profile == 'test_publish'
         run: |
           set -euo pipefail
-          nextflow run . -profile test_publish -stub-run
+          # --overwrite false, as a production launch: a fresh destination
+          # must be claimed, not taken for one that already has results.
+          nextflow run . -profile test_publish -stub-run --overwrite false
           out=results-test-publish/illumina_nextseq_VH00000/2026/illumina_run
           for f in illumina_run_multiqc_report.html qc/nf-seqc_session.txt \
                    TEST1_S1_L001_R1_001.fastq.gz TEST1_S1_L001_R2_001.fastq.gz; do

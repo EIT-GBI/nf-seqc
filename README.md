@@ -38,12 +38,13 @@ QC files and reads to the same path under `/mnt/instrument-data/sequencing/`,
 where scientists read them:
 `/mnt/instrument-data/sequencing/pacbio_revio_84334/2026/r84334_20260817_141703/`.
 
-> **For now the default is `/mnt/lustre/users/$USER/nf-seqc-results/`.** Only the
-> Prefect deployment can write to `/mnt/instrument-data/sequencing`, so until
-> the pipeline runs under Prefect, results land in the launching user's Lustre
-> space with the same `<instrument>/<YYYY>/<run>` layout. Pass
-> `--publish_root /mnt/instrument-data/sequencing` from an account that can
-> write there.
+> **For now the default is `/mnt/lustre/users/$USER/nf-seqc-results/`**, with
+> the same `<instrument>/<YYYY>/<run>` layout: the launching account's Lustre
+> space, which the Prefect robot account has too. The results bucket for
+> scientists exists but is not mounted yet, and `/mnt/instrument-data/sequencing`
+> is for now a view of the raw data (the same buckets as the prep zone), so do
+> not publish there. A destination the account cannot write to stops the run
+> at the start.
 The roots are `--prep_root` and `--publish_root`; `--outdir` overrides the
 destination. `--input <run_dir>` still takes any run folder, publishing to
 `--outdir` (default `results/<run folder name>`).

@@ -60,6 +60,24 @@ def resolveRun( String instrument, String run, String prep_root, String found ) 
 // --overwrite: either would add the new layout beside the old one and leave
 // every read file there twice. Scratch output (--input, test profiles) is
 // not checked, so old local test folders can still be written over.
+// Fails at the start, with what to do, rather than on the first published
+// file: the destination must be writable by the launching account (the
+// default is its own Lustre space; a missing USER makes it .../users/null).
+// Creates <out>/qc on the way.
+def requireWritable( out ) {
+    def qc = out.resolve( 'qc' )
+    def hint = 'Pass --publish_root or --outdir with a directory this account can write to.'
+    try {
+        java.nio.file.Files.createDirectories( qc )
+    }
+    catch ( java.io.IOException e ) {
+        error "Cannot write to ${out} (${e.class.simpleName}: ${e.message}). ${hint}"
+    }
+    if ( !java.nio.file.Files.isWritable( qc ) ) {
+        error "Cannot write to ${qc}. ${hint}"
+    }
+}
+
 def claimOutput( out, String session, boolean resuming, boolean overwrite, boolean delivered ) {
     def old_layout = delivered ? [ 'reads', 'bam', 'multiqc', 'metrics', 'pipeline_info' ].findAll { d -> out.resolve( d ).isDirectory() } : []
     if ( old_layout ) {
@@ -70,11 +88,14 @@ def claimOutput( out, String session, boolean resuming, boolean overwrite, boole
     if ( resuming && owner == session ) {
         return
     }
-    if ( out.exists() && out.list() ) {
-        if ( !overwrite ) {
-            def resume = owner ? "-resume ${owner} to continue the session that wrote them" : '-resume <session> to continue the session that wrote them'
-            error "Output directory ${out} already has results. Pass ${resume}, or --overwrite to write over them."
-        }
+    // Read before anything is created here: requireWritable() makes qc/.
+    def has_results = out.exists() && out.list()
+    if ( has_results && !overwrite ) {
+        def resume = owner ? "-resume ${owner} to continue the session that wrote them" : '-resume <session> to continue the session that wrote them'
+        error "Output directory ${out} already has results. Pass ${resume}, or --overwrite to write over them."
+    }
+    requireWritable( out )
+    if ( has_results ) {
         log.warn "Writing over the results already in ${out} (--overwrite was set)."
         claim.parent.mkdirs()
         claim.text = "${session}\n"
