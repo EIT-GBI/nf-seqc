@@ -40,10 +40,15 @@ custom_table_header_config:
 # BCL Convert names FASTQ <sample>_S<n>[_L<lane>]_R1_001.fastq.gz, so FastQC
 # rows come out as "<sample>_S1_L001" while the read-share column (from
 # Demultiplex_Stats.csv) is keyed on "<sample>". Strip the suffix so the two
-# land on one row.
+# land on one row. Only for FastQC and BCL Convert, and only before
+# _R1_001/_R2_001: applied everywhere, it merged AVITI or long-read samples
+# whose own names end in _S<n> (Mouse_S1, Mouse_S2) into one row.
 extra_fn_clean_exts:
   - type: regex
-    pattern: '_S\d+(_L\d{3})?(?=_R[12]|$)'
+    pattern: '_S\d+(_L\d{3})?(?=_R[12]_001|$)'
+    module:
+      - fastqc
+      - bclconvert
 
 # Don't use top_modules for ordering: in MultiQC 1.35 listing bases2fastq there
 # runs the module twice. report_section_order below does the ordering.

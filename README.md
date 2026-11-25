@@ -207,18 +207,18 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 | `--publish_root` | `/mnt/lustre/users/$USER/nf-seqc-results` (temporary; production: `/mnt/instrument-data/sequencing`) | where `--instrument`/`--run` results are published |
 | `--input` | — | run directory, instead of `--instrument`/`--run` |
 | `--outdir` | `<publish_root>/<instrument>/<YYYY>/<run>`, or `results/<run>` with `--input` | output directory |
-| `--overwrite` | `false` | publish into a destination that already has results |
+| `--overwrite` | `false` | publish into a destination that already has results. Files are written over, never removed: a file the new run does not produce (a sample renamed in a corrected sample sheet, `<sample>_fail.bam` after dropping `--include_failed`, Undetermined FastQC after dropping `--include_undetermined`) stays, so clear the folder first when that matters |
 | `--platform` | auto-detect | force a platform |
 | `--run_id` | run dir name | overrides the run label |
 | `--fastq_dir` | — | Illumina: FASTQ live outside the run folder |
 | `--illumina_analysis` | latest | Illumina: report on `Analysis/<n>`. A re-analysis on the instrument adds `Analysis/2`, `3`, … beside `Analysis/1`, each with its own FASTQ; by default the latest is used (with a warning naming the others). To publish a later re-analysis of a run already delivered, run again with `--overwrite`: files of samples that are no longer in the analysis stay, so clear the old folder first if that matters. A `-resume` also picks the latest analysis again, so resume with the same `--illumina_analysis` |
-| `--pod5_dir` | — | Nanopore: POD5 live outside the run folder |
+| `--pod5_dir` | — | Nanopore: POD5 live outside the run folder. Flow cell ids, the kit and sample-sheet aliases come from `final_summary_*.txt` and `sample_sheet_*.csv` beside each acquisition's POD5 folders, so keep MinKNOW's layout (copy them along); bare POD5 need `--barcode_kit` and are named after their folders, with no per-sample MinKNOW statistics. The run folder is still checked for `final_summary` |
 | `--barcode_kit` | — | Nanopore: barcoding kit (e.g. `SQK-RBK114-24`) when `final_summary` does not name one |
 | `--min_barcode_reads` | `100` | Nanopore: fewest reads for a barcode to be reported as a sample; reads of smaller barcodes count as unclassified, and their BAM is delivered as `unclassified_<flowcell>_<barcode>.bam` |
 | `--bam_dir` | — | PacBio: HiFi BAM live outside the run folder |
 | `--include_undetermined` | `false` | Also QC the Undetermined (Illumina) / Unassigned (AVITI) reads: FastQC and a sample row. They are delivered either way |
 | `--include_failed` | `false` | Nanopore: also basecall `pod5_fail`, demultiplexed apart (`qc/<flowcell>_fail.barcoding_summary.txt`) and delivered as `<sample>_fail.bam`, or `<sample>_<flowcell>_fail_<run>.bam` on a restarted unbarcoded flow cell (never inside a sample's BAM, never a sample row), and report the unclassified reads as a sample (they are delivered either way). PacBio failed reads are always counted per barcode (hidden General Statistics column) |
-| `--allow_incomplete` | `false` | Report even on an unfinished run: Illumina without `RTAComplete.txt`/`CopyComplete.txt`, Nanopore with an acquisition lacking `final_summary_*.txt`, PacBio with a movie lacking `metadata/<movie>.transferdone` |
+| `--allow_incomplete` | `false` | Report even on an unfinished run: Illumina without `RTAComplete.txt`/`CopyComplete.txt`, AVITI without `RunUploaded.json`, Nanopore with an acquisition lacking `final_summary_*.txt`, PacBio with a movie lacking `metadata/<movie>.transferdone` |
 | `--max_undetermined` | `15` | Illumina, AVITI and barcoded PacBio: flag the run as high in the Demultiplexing table, plus a log warning, above this % of Undetermined (Illumina) or Unassigned (AVITI, PacBio Not Barcoded) reads |
 | `--pacbio_min_p1` | `50` | PacBio: flag a SMRT Cell as `low P1` (under-loaded) in Run Metrics, plus a log warning, below this % of productive ZMWs (the lab's threshold; P1 is ideally above 60%) |
 | `--pacbio_max_p2` | `5` | PacBio: flag a SMRT Cell as `high P2` (over-loaded) above this % of P2 ZMWs |

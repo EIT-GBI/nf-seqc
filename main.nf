@@ -11,7 +11,7 @@
 include { ILLUMINA_QC  } from './subworkflows/local/illumina_qc.nf'
 include { AVITI_QC     } from './subworkflows/local/aviti_qc.nf'
 include { NANOPORE_QC; nanoporeUnfinished; nanoporeLayoutCheck; ontPod5Folders } from './subworkflows/local/nanopore_qc.nf'
-include { PACBIO_QC; revioUnfinishedCells } from './subworkflows/local/pacbio_qc.nf'
+include { PACBIO_QC; revioUnfinishedCells; revioSamples } from './subworkflows/local/pacbio_qc.nf'
 include { BATCH_REPORT } from './subworkflows/local/batch_report.nf'
 include { COPY_READS   } from './modules/local/copy_reads/main.nf'
 include { SAMPLE_METADATA } from './modules/local/sample_metadata/main.nf'
@@ -108,7 +108,10 @@ def detectPlatform( run_dir ) {
     if ( file("${run_dir}/RunInfo.xml").exists() ) {
         return 'illumina'
     }
+    // final_summary sits in each acquisition folder, <sample>/<acquisition>/,
+    // and stays there when the POD5 were moved out (--pod5_dir).
     if ( matchingFiles(run_dir, 'final_summary_*.txt')
+      || matchingFiles(run_dir, '**/final_summary_*.txt')
       || matchingFiles(run_dir, '*.pod5')
       || matchingFiles(run_dir, '**/*.pod5') ) {
         return 'nanopore'
@@ -245,11 +248,17 @@ workflow {
             error "No *_R1_001.fastq.gz found under ${fastq_root}. Has the run been demultiplexed? Point --fastq_dir at the FASTQ directory if they live elsewhere, or pick another analysis with --illumina_analysis."
         }
     }
-    else if ( params.illumina_analysis != null ) {
-        log.warn "--illumina_analysis is for Illumina runs; ignored on a ${platform} run."
+    else if ( platform == 'aviti' ) {
+        // AVITI writes RunUploaded.json ("outcome":"OutcomeCompleted") once
+        // the run is fully copied off the instrument: every sequencing run in
+        // the prep zone has one (2026-11-25), runs still being written do not.
+        def missing = [ 'RunUploaded.json' ].findAll { m -> !file("${run_dir}/${m}").exists() }
+        requireRunComplete( run_id, missing, flag( params.allow_incomplete ) )
     }
     else if ( platform == 'nanopore' ) {
-        def unfinished = nanoporeUnfinished( pod5_dir ?: run_dir ).collect { acq -> "${acq}/final_summary_*.txt".toString() }
+        // final_summary is checked in the run folder even with --pod5_dir:
+        // MinKNOW writes it there, wherever the POD5 were moved.
+        def unfinished = nanoporeUnfinished( run_dir ).collect { acq -> "${acq}/final_summary_*.txt".toString() }
         requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
         def layout = nanoporeLayoutCheck( pod5_dir ?: run_dir, params.barcode_kit )
         if ( layout.errors ) {
@@ -272,6 +281,21 @@ workflow {
         // The run folder, not --bam_dir: metadata/ (transferdone) stays with
         // the run wherever the BAMs were moved.
         requireRunComplete( run_id, revioUnfinishedCells( run_dir ), flag( params.allow_incomplete ) )
+        // As PACBIO_QC checks them, but here, before the claim: no BAM, and
+        // two BAMs that would be published under one name.
+        def root = bam_dir ?: run_dir
+        def bams = ( files("${root}/**/*.hifi_reads*.bam") + files("${root}/*.hifi_reads*.bam") )
+            .findAll { f -> f.exists() && !f.name.contains('.unassigned.') }
+            .unique()
+        if ( !bams ) {
+            error "No *.hifi_reads*.bam found under ${root}. Point --bam_dir at the SMRT Cell output if it lives elsewhere."
+        }
+        revioSamples( [:], bams.sort() )
+    }
+    // Not in the chain above: on another platform it would skip that
+    // platform's checks.
+    if ( platform != 'illumina' && params.illumina_analysis != null ) {
+        log.warn "--illumina_analysis is for Illumina runs; ignored on a ${platform} run."
     }
 
     claimOutput( workflow.outputDir, workflow.sessionId.toString(), workflow.resume, flag( params.overwrite ), by_name )
