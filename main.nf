@@ -273,13 +273,19 @@ workflow {
         // AVITI writes RunUploaded.json ("outcome":"OutcomeCompleted") once
         // the run is fully copied off the instrument: every sequencing run in
         // the prep zone has one (2026-11-25), runs still being written do not.
-        def missing = [ 'RunUploaded.json' ].findAll { m -> !file("${run_dir}/${m}").exists() }
+        // A marker with another outcome (a failed upload) counts as missing.
+        def marker  = file("${run_dir}/RunUploaded.json")
+        def outcome = marker.exists() ? ( marker.text =~ /"outcome"\s*:\s*"([^"]*)"/ ).with { m -> m.find() ? m.group(1) : null } : null
+        def missing = !marker.exists() ? [ 'RunUploaded.json' ]
+            : outcome && outcome != 'OutcomeCompleted' ? [ "RunUploaded.json with outcome OutcomeCompleted (it says ${outcome})".toString() ]
+            : []
         requireRunComplete( run_id, missing, flag( params.allow_incomplete ) )
     }
     else if ( platform == 'nanopore' ) {
-        // final_summary is checked in the run folder even with --pod5_dir:
-        // MinKNOW writes it there, wherever the POD5 were moved.
-        def unfinished = nanoporeUnfinished( run_dir ).collect { acq -> "${acq}/final_summary_*.txt".toString() }
+        // Acquisitions found where the POD5 are (--pod5_dir or the run
+        // folder); final_summary looked for beside them and in the run
+        // folder, where MinKNOW writes it, wherever the POD5 were moved.
+        def unfinished = nanoporeUnfinished( pod5_dir ?: run_dir, run_dir ).collect { acq -> "${acq}/final_summary_*.txt".toString() }
         requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
         def layout = nanoporeLayoutCheck( pod5_dir ?: run_dir, params.barcode_kit )
         if ( layout.errors ) {

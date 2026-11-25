@@ -105,13 +105,20 @@ def ontPod5Folders( meta, root, boolean include_failed, barcode_kit ) {
 // Acquisition directories that have POD5 but no final_summary_*.txt yet:
 // MinKNOW writes final_summary last. Checked from the entry workflow, before
 // any task runs.
-def nanoporeUnfinished( root ) {
+// root holds the POD5 (the run folder, or --pod5_dir); run_dir is where
+// MinKNOW writes final_summary, which stays in the run folder when the POD5
+// were moved out: an acquisition is finished with a final_summary in either,
+// matched by the acquisition folder's name.
+def nanoporeUnfinished( root, run_dir ) {
     def status_dirs = ( files("${root}/**/pod5*", type: 'dir') + files("${root}/pod5*", type: 'dir') )
         .findAll { d -> d.exists() && files("${d}/**/*.pod5") + files("${d}/*.pod5") }
+    def in_run = ( files("${run_dir}/**/final_summary_*.txt") + files("${run_dir}/final_summary_*.txt") )
+        .findAll { f -> f.exists() }
+        .collect { f -> f.parent.name }
     return status_dirs
         .collect { d -> d.parent }
         .unique()
-        .findAll { acq -> !files("${acq}/final_summary_*.txt").find { f -> f.exists() } }
+        .findAll { acq -> !files("${acq}/final_summary_*.txt").find { f -> f.exists() } && !( acq.name in in_run ) }
         .collect { acq -> acq.name }
 }
 
