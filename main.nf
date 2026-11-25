@@ -10,7 +10,7 @@
 
 include { ILLUMINA_QC  } from './subworkflows/local/illumina_qc.nf'
 include { AVITI_QC     } from './subworkflows/local/aviti_qc.nf'
-include { NANOPORE_QC; nanoporeUnfinished } from './subworkflows/local/nanopore_qc.nf'
+include { NANOPORE_QC; nanoporeUnfinished; nanoporeLayoutCheck } from './subworkflows/local/nanopore_qc.nf'
 include { PACBIO_QC; revioUnfinishedCells } from './subworkflows/local/pacbio_qc.nf'
 include { BATCH_REPORT } from './subworkflows/local/batch_report.nf'
 include { COPY_READS   } from './modules/local/copy_reads/main.nf'
@@ -237,6 +237,13 @@ workflow {
     else if ( platform == 'nanopore' ) {
         def unfinished = nanoporeUnfinished( pod5_dir ?: run_dir ).collect { acq -> "${acq}/final_summary_*.txt".toString() }
         requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
+        def layout = nanoporeLayoutCheck( pod5_dir ?: run_dir, params.barcode_kit )
+        if ( layout.errors ) {
+            error "Run ${run_id} has read folders the pipeline does not handle yet: ${layout.errors.join(', ')}. Their reads would be counted twice (EIT-GBI/nf-seqc#24). Move them out of the run folder, or point --pod5_dir at the folders to process."
+        }
+        layout.warnings.each { w ->
+            log.warn "Acquisition ${w} uses a barcoding kit but has no barcode folders: it will not be demultiplexed and comes out as one sample (EIT-GBI/nf-seqc#24)."
+        }
     }
     else if ( platform == 'pacbio' ) {
         requireRunComplete( run_id, revioUnfinishedCells( bam_dir ?: run_dir ), flag( params.allow_incomplete ) )

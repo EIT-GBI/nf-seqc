@@ -162,7 +162,13 @@ barcoding kit (`--kit-name`, read from `final_summary_*.txt`), and
 `dorado demux` then splits each flow cell's reads by barcode. Samples are named
 after the sample sheet's `alias`, or the barcode. Unclassified reads are counted
 in the Demultiplexing table and always delivered (`unclassified_<flowcell>.bam`),
-but reported as a sample only with `--include_failed`.
+but reported as a sample only with `--include_failed`. A barcode under
+`--min_barcode_reads` is not a sample either: its reads count as unclassified
+and its BAM is delivered as `unclassified_<flowcell>_<barcode>.bam`. An
+unbarcoded flow cell is one sample; restarted, it has one BAM per acquisition
+(`<sample>_<flowcell>_<run>.bam`) and one sample row. Read folders other than
+`pod5_pass/`, `pod5_fail/` and `pod5/` (e.g. `pod5_skip/`, `pod5_recovered/`)
+stop the run before anything is published (EIT-GBI/nf-seqc#24).
 
 ### Illumina run metrics
 
@@ -207,10 +213,10 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 | `--illumina_analysis` | latest | Illumina: report on `Analysis/<n>`. A re-analysis on the instrument adds `Analysis/2`, `3`, … beside `Analysis/1`, each with its own FASTQ; by default the latest is used (with a warning naming the others). To publish a later re-analysis of a run already delivered, run again with `--overwrite`: files of samples that are no longer in the analysis stay, so clear the old folder first if that matters |
 | `--pod5_dir` | — | Nanopore: POD5 live outside the run folder |
 | `--barcode_kit` | — | Nanopore: barcoding kit (e.g. `SQK-RBK114-24`) when `final_summary` does not name one |
-| `--min_barcode_reads` | `100` | Nanopore: fewest reads for a barcode to be reported as a sample; reads of smaller barcodes count as unclassified |
+| `--min_barcode_reads` | `100` | Nanopore: fewest reads for a barcode to be reported as a sample; reads of smaller barcodes count as unclassified, and their BAM is delivered as `unclassified_<flowcell>_<barcode>.bam` |
 | `--bam_dir` | — | PacBio: HiFi BAM live outside the run folder |
 | `--include_undetermined` | `false` | Also QC the Undetermined (Illumina) / Unassigned (AVITI) reads: FastQC and a sample row. They are delivered either way |
-| `--include_failed` | `false` | Nanopore: basecall `pod5_fail` too, and report the unclassified reads as a sample (they are delivered either way). PacBio failed reads are always counted per barcode (hidden General Statistics column) |
+| `--include_failed` | `false` | Nanopore: also basecall `pod5_fail`, demultiplexed apart and delivered as `<sample>_fail.bam` (never inside a sample's BAM, never a sample row), and report the unclassified reads as a sample (they are delivered either way). PacBio failed reads are always counted per barcode (hidden General Statistics column) |
 | `--allow_incomplete` | `false` | Report even on an unfinished run: Illumina without `RTAComplete.txt`/`CopyComplete.txt`, PacBio with a SMRT Cell lacking `metadata/*.transferdone` |
 | `--max_undetermined` | `15` | Illumina, AVITI and barcoded PacBio: flag the run as high in the Demultiplexing table, plus a log warning, above this % of Undetermined (Illumina) or Unassigned (AVITI, PacBio Not Barcoded) reads |
 | `--pacbio_min_p1` | `50` | PacBio: flag a SMRT Cell as `low P1` (under-loaded) in Run Metrics, plus a log warning, below this % of productive ZMWs (the lab's threshold; P1 is ideally above 60%) |
