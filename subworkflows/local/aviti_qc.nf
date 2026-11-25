@@ -60,7 +60,13 @@ def bases2fastqReads( run_stats ) {
             [ lane: lane.Lane, index: barcodeName( u.I1, u.I2 ), reads: u.Count as long ]
         }
     }
-    def demux = demuxSummary( samples, total - ( assigned.values().sum() ?: 0L ), barcodes )
+    // Each sample's polonies per lane: the two lanes may hold separate pools,
+    // so loading is judged against the samples sharing its lane.
+    def pools = stats.SampleStats.findAll { s -> !phixSample( s.SampleName ) }.collectEntries { s ->
+        [ ( s.SampleName ): ( s.Occurrences ?: [] ).groupBy { o -> ( o.Lane ?: 1 ).toString() }
+            .collectEntries { lane, os -> [ ( lane ): os.sum { o -> ( o.NumPolonies ?: 0 ) as long } ] } ]
+    }
+    def demux = demuxSummary( samples, total - ( assigned.values().sum() ?: 0L ), barcodes, pools )
     return withPhixReads( demux, phix as long, 'assigned to the PhiX control by bases2fastq' )
 }
 
@@ -204,7 +210,8 @@ workflow AVITI_QC {
         }
 
         r1s.sort().collect { r1 ->
-            def r2  = files.find { f -> f.name == r1.name.replace('_R1', '_R2') }
+            // Only the read tag: a sample may itself be called e.g. Rep_R1
+            def r2  = files.find { f -> f.name == r1.name.replaceFirst(/_R1((_001)?\.fastq\.gz)$/, '_R2$1') }
             def sid = r1.name.replaceAll(/_R1(_001)?\.fastq\.gz$/, '')
             tuple( meta + [ id: sid, single_end: r2 == null, undetermined: isUnassigned( r1 ) ], r1, r2 ?: [] )
         }

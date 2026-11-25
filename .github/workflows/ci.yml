@@ -156,11 +156,13 @@ jobs:
                    TEST1_S1_L001_R1_001.fastq.gz TEST1_S1_L001_R2_001.fastq.gz; do
             test -f "$out/$f" || { echo "::error::missing $out/$f"; ls -R results-test-publish || true; exit 1; }
           done
-          # A second launch into the published run must be refused.
-          if nextflow run . -profile test_publish -stub-run --overwrite false; then
+          # A second launch into the published run must be refused, and for
+          # that reason: any other failure would pass a bare exit-status check.
+          if nextflow run . -profile test_publish -stub-run --overwrite false > second.log 2>&1; then
             echo "::error::second launch into $out was not refused"
             exit 1
           fi
+          grep -q 'already has results' second.log || { echo "::error::second launch failed, but not because $out has results"; cat second.log; exit 1; }
 
       - name: Upload logs on failure
         if: failure()

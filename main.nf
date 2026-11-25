@@ -10,7 +10,7 @@
 
 include { ILLUMINA_QC  } from './subworkflows/local/illumina_qc.nf'
 include { AVITI_QC     } from './subworkflows/local/aviti_qc.nf'
-include { NANOPORE_QC; nanoporeUnfinished } from './subworkflows/local/nanopore_qc.nf'
+include { NANOPORE_QC; nanoporeUnfinished; nanoporeLayoutCheck; ontPod5Folders } from './subworkflows/local/nanopore_qc.nf'
 include { PACBIO_QC; revioUnfinishedCells } from './subworkflows/local/pacbio_qc.nf'
 include { BATCH_REPORT } from './subworkflows/local/batch_report.nf'
 include { COPY_READS   } from './modules/local/copy_reads/main.nf'
@@ -131,13 +131,40 @@ def flag( value ) {
     return value instanceof CharSequence ? value.toString().toBoolean() : value as boolean
 }
 
-// Refuse to report on a run the instrument has not finished writing. Mirrors the
-// RTAComplete.txt + CopyComplete.txt gate in
-// EIT-GBI/Automate-Seq-Run-Metrics-Collection: InterOp metrics read from a
-// partial run are misleading rather than merely incomplete.
+// The on-instrument analysis an Illumina run is reported from: Analysis/<n>
+// holds one BCL Convert pass (FASTQ, Reports/, SampleSheet.csv), and a
+// re-analysis on the instrument adds Analysis/2, 3, ... beside it, each with a
+// full set of FASTQ. The latest is taken unless --illumina_analysis names one;
+// null for a run without Analysis/ (FASTQ elsewhere, or --fastq_dir).
+def illuminaAnalysis( run_dir, wanted ) {
+    def found = files("${run_dir}/Analysis/*", type: 'dir')
+        .findAll { d -> d.name.isInteger() }
+        .collect { d -> d.name.toInteger() }
+        .sort()
+    if ( wanted != null ) {
+        def n = wanted.toString()
+        if ( !n.isInteger() || !( n.toInteger() in found ) ) {
+            error "--illumina_analysis ${n}: no Analysis/${n} in ${run_dir}${found ? " (it has ${found.collect { a -> "Analysis/${a}" }.join(', ')})" : ''}."
+        }
+        return n.toInteger()
+    }
+    if ( !found ) {
+        return null
+    }
+    if ( found.size() > 1 ) {
+        log.warn "Run ${run_dir.name} has ${found.size()} analyses (${found.collect { a -> "Analysis/${a}" }.join(', ')}); reporting on the latest, Analysis/${found.last()}. Pick another with --illumina_analysis <n>."
+    }
+    return found.last()
+}
+
+// Refuse to report on a run the instrument has not finished writing (Illumina:
+// RTAComplete.txt + CopyComplete.txt, as the original metrics collector did):
+// metrics read from a partial run are misleading rather than merely
+// incomplete.
 //
-// `missing` names what is absent: marker files (Illumina) or unfinished SMRT
-// Cells (PacBio).
+// `missing` names what is absent: marker files (Illumina), final_summary of
+// unfinished acquisitions (Nanopore) or transferdone of unfinished movies
+// (PacBio).
 def requireRunComplete( String run_id, List<String> missing, boolean allow_incomplete ) {
     if ( !missing ) {
         return
@@ -181,15 +208,13 @@ workflow {
         }
     }
 
-    claimOutput( workflow.outputDir, workflow.sessionId.toString(), workflow.resume, flag( params.overwrite ), by_name )
-
     log.info "nf-seqc: run '${run_id}' on platform '${platform}'"
     log.info "nf-seqc: reading ${run_dir}"
-    log.info "nf-seqc: publishing to ${workflow.outputDir}"
 
     // params are read here, in the entry workflow, and handed to the
     // subworkflows as inputs: reading params anywhere else is deprecated.
-    // Directory overrides are checked now, so a typo fails before any task.
+    // Directory overrides are checked now, so a typo fails before any task,
+    // and before the output directory is claimed.
     def fastq_dir = params.fastq_dir ? file( params.fastq_dir, checkIfExists: true ) : null
     def pod5_dir  = params.pod5_dir  ? file( params.pod5_dir,  checkIfExists: true ) : null
     def bam_dir   = params.bam_dir   ? file( params.bam_dir,   checkIfExists: true ) : null
@@ -200,7 +225,59 @@ workflow {
     def pacbio_min_p1    = params.pacbio_min_p1 as BigDecimal
     def pacbio_max_p2    = params.pacbio_max_p2 as BigDecimal
 
-    ch_run = channel.value( tuple( [ id: run_id, run: run_id, platform: platform ], run_dir ) )
+    // An unfinished run is refused before the output directory is claimed:
+    // claiming first would leave qc/nf-seqc_session.txt behind, and refuse
+    // the retry once the instrument has finished writing.
+    def analysis = null
+    if ( platform == 'illumina' ) {
+        def missing = [ 'RTAComplete.txt', 'CopyComplete.txt' ].findAll { m -> !file("${run_dir}/${m}").exists() }
+        requireRunComplete( run_id, missing, flag( params.allow_incomplete ) )
+        if ( fastq_dir && params.illumina_analysis != null ) {
+            log.warn "--illumina_analysis ${params.illumina_analysis} is ignored with --fastq_dir: the FASTQ and BCL Convert reports come from ${fastq_dir}."
+        }
+        analysis = fastq_dir ? null : illuminaAnalysis( run_dir, params.illumina_analysis )
+        // Checked here too (ILLUMINA_QC repeats it): failing inside the
+        // subworkflow would leave the output directory claimed.
+        def fastq_root = fastq_dir ?: ( analysis != null ? run_dir.resolve( "Analysis/${analysis}" ) : run_dir )
+        def r1s = ( files("${fastq_root}/**/*_R1_001.fastq.gz") + files("${fastq_root}/*_R1_001.fastq.gz") )
+            .findAll { f -> f.exists() && !f.name.startsWith('Undetermined') }
+        if ( !r1s ) {
+            error "No *_R1_001.fastq.gz found under ${fastq_root}. Has the run been demultiplexed? Point --fastq_dir at the FASTQ directory if they live elsewhere, or pick another analysis with --illumina_analysis."
+        }
+    }
+    else if ( params.illumina_analysis != null ) {
+        log.warn "--illumina_analysis is for Illumina runs; ignored on a ${platform} run."
+    }
+    else if ( platform == 'nanopore' ) {
+        def unfinished = nanoporeUnfinished( pod5_dir ?: run_dir ).collect { acq -> "${acq}/final_summary_*.txt".toString() }
+        requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
+        def layout = nanoporeLayoutCheck( pod5_dir ?: run_dir, params.barcode_kit )
+        if ( layout.errors ) {
+            error "Run ${run_id} has read folders the pipeline does not handle yet: ${layout.errors.join(', ')}. Their reads would be counted twice (EIT-GBI/nf-seqc#24). Move them out of the run folder, or point --pod5_dir at the folders to process."
+        }
+        // As NANOPORE_QC checks them, but here, before the claim.
+        def folders = ontPod5Folders( [:], pod5_dir ?: run_dir, flag( params.include_failed ), params.barcode_kit )
+        if ( !folders ) {
+            error "No *.pod5 found under ${pod5_dir ?: run_dir}. Point --pod5_dir at the POD5 directory if they live elsewhere."
+        }
+        def no_kit = folders.findAll { m, _dir -> m.barcoded && !m.kit }
+        if ( no_kit ) {
+            error "${no_kit[0][0].flowcell} is barcoded but its final_summary names no barcoding kit. Pass --barcode_kit (e.g. SQK-RBK114-24)."
+        }
+        layout.warnings.each { w ->
+            log.warn "Acquisition ${w} uses a barcoding kit but has no barcode folders: it will not be demultiplexed and comes out as one sample (EIT-GBI/nf-seqc#24)."
+        }
+    }
+    else if ( platform == 'pacbio' ) {
+        // The run folder, not --bam_dir: metadata/ (transferdone) stays with
+        // the run wherever the BAMs were moved.
+        requireRunComplete( run_id, revioUnfinishedCells( run_dir ), flag( params.allow_incomplete ) )
+    }
+
+    claimOutput( workflow.outputDir, workflow.sessionId.toString(), workflow.resume, flag( params.overwrite ), by_name )
+    log.info "nf-seqc: publishing to ${workflow.outputDir}"
+
+    ch_run = channel.value( tuple( [ id: run_id, run: run_id, platform: platform, analysis: analysis ], run_dir ) )
 
     ch_reads    = channel.empty()
     ch_bam      = channel.empty()
@@ -214,8 +291,6 @@ workflow {
     def check_reads = 10000       // reads scanned for modified-base tags per BAM
 
     if ( platform == 'illumina' ) {
-        def missing = [ 'RTAComplete.txt', 'CopyComplete.txt' ].findAll { m -> !file("${run_dir}/${m}").exists() }
-        requireRunComplete( run_id, missing, flag( params.allow_incomplete ) )
         ILLUMINA_QC( ch_run, fastq_dir, flag( params.include_undetermined ), max_undetermined )
         // The FASTQ are the instrument's, so copy them to make them publishable.
         COPY_READS( ILLUMINA_QC.out.reads.map { meta, fastqs -> tuple( meta, fastqs, fastqs.collect { f -> f.name } ) } )
@@ -234,8 +309,6 @@ workflow {
         ch_versions = AVITI_QC.out.versions
     }
     else if ( platform == 'nanopore' ) {
-        def unfinished = nanoporeUnfinished( pod5_dir ?: run_dir ).collect { acq -> "${acq}/final_summary_*.txt".toString() }
-        requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
         NANOPORE_QC( ch_run, pod5_dir, flag( params.include_failed ), params.barcode_kit, params.basecall.model, max_undetermined, params.min_barcode_reads as long )
         ch_bam      = NANOPORE_QC.out.bam
         ch_check    = NANOPORE_QC.out.bam
@@ -244,8 +317,6 @@ workflow {
         ch_versions = NANOPORE_QC.out.versions
     }
     else if ( platform == 'pacbio' ) {
-        def unfinished = revioUnfinishedCells( bam_dir ?: run_dir ).collect { cell -> "${cell}/metadata/*.transferdone".toString() }
-        requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
         PACBIO_QC( ch_run, bam_dir, max_undetermined, pacbio_min_p1, pacbio_max_p2 )
         // The HiFi BAM are the instrument's, so copy them to make them
         // publishable, with their PacBio index (.bam.pbi) where there is one,
@@ -271,13 +342,19 @@ workflow {
     // bases its reads carry. Unassigned / unclassified BAMs are checked and
     // warned about, but get no General Statistics row of their own.
     BAM_CHECK( ch_check, check_reads )
-    def expect_mods = platform == 'nanopore' && params.basecall.modified_bases as boolean
+    def expect_mods = platform == 'nanopore' && params.basecall.modified_bases && params.basecall.modified_bases.toString() != 'false'
     ch_bam_check = BAM_CHECK.out.check
         .map { meta, tsv -> [ meta, bamCheckRow( tsv.text ) ] }
         .toList()
         .flatMap { checked ->
             bamCheckWarnings( checked.collect { c -> c[1] }, expect_mods, 'BAM_CHECK' )
-            def rows  = checked.findAll { meta, _row -> !meta.unassigned && ( meta.barcode != 'unclassified' || flag( params.include_failed ) ) }
+            // Rows for the BAMs reported as samples only, under their sample
+            // name: not a failed-reads BAM, a barcode under
+            // --min_barcode_reads, or a restarted flow cell's second BAM
+            // (meta.report false), and not the unassigned/unclassified reads
+            // unless --include_failed.
+            def rows  = checked.findAll { meta, _row -> meta.report != false && !meta.unassigned && ( meta.barcode != 'unclassified' || flag( params.include_failed ) ) }
+                .collect { meta, row -> [ meta, row + [ id: meta.report_id ?: row.id ] ] }
             // Sorted, so the table (a MultiQC input) is the same on every run
             // and -resume does not rerun MULTIQC for nothing.
             def table = bamCheckTable( rows.collect { c -> c[1] }.sort { r -> r.id }, check_reads )
@@ -351,8 +428,7 @@ output {
     barcoding {
         path { meta, summary -> summary >> "qc/${meta.id}.barcoding_summary.txt" }
     }
-    // One-row-per-run CSV, column-compatible with the log kept by
-    // EIT-GBI/Automate-Seq-Run-Metrics-Collection so rows can be concatenated.
+    // One-row-per-run CSV: CSVs from several runs concatenate into one table.
     metrics {
         path 'qc'
     }

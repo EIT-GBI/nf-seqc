@@ -101,22 +101,50 @@ def revioSamples( meta, List bams ) {
         def well = cell ? cell.name : b.movie
         [ meta: meta + [ id: safeId( name ), well: well, movie: b.movie, barcode: b.barcode ], bam: bam ]
     }
-    def counts = rows.countBy { r -> r.meta.id }
-    return rows.collect { r ->
-        def id = counts[ r.meta.id ] > 1 ? "${r.meta.id}_${r.meta.well}" : r.meta.id
-        tuple( r.meta + [ id: id ], r.bam )
-    }
+    return uniqueIds( rows, [ 'well', 'movie', 'barcode' ] ).collect { r -> tuple( r.meta, r.bam ) }
 }
 
-// Cells whose transfer has not finished: Revio writes
-// metadata/<movie>.transferdone once a cell is fully copied off the
-// instrument. Checked from the entry workflow, before any task runs.
+// [ meta:, bam: ] rows with meta.id unique, as the published file names need:
+// an id shared by several rows gets the first of `keys` (meta fields, e.g.
+// the well) that tells them apart appended, then the next, and so on. Two
+// samples can share a name (one BioSample on two cells, or with two barcodes
+// in one cell), and one well can hold two movies. Rows still alike after
+// every key are an error: one file would silently overwrite the other.
+def uniqueIds( List rows, List keys ) {
+    def out = rows
+    keys.each { k ->
+        def counts = out.countBy { r -> r.meta.id }
+        out = out.collect { r ->
+            counts[ r.meta.id ] > 1 && r.meta[k] ? [ meta: r.meta + [ id: safeId( "${r.meta.id}_${r.meta[k]}".toString() ) ], bam: r.bam ] : r
+        }
+    }
+    def clashes = out.countBy { r -> r.meta.id }.findAll { _id, n -> n > 1 }.keySet()
+    if ( clashes ) {
+        error "PACBIO_QC: several BAMs would be published as ${clashes.join(', ')}: ${out.findAll { r -> r.meta.id in clashes }.collect { r -> r.bam.name }.join(', ')}."
+    }
+    return out
+}
+
+// Transfers that have not finished, as the transferdone files still missing.
+// Revio writes metadata/<movie>.transferdone once a movie is fully copied off
+// the instrument. Each movie a SMRT Cell holds (its HiFi BAM and dataset XML
+// name it, and so do the files metadata/ already holds) needs its own, so a
+// cell whose metadata/ does not exist yet, one where only metadata/ has been
+// copied so far, or a well whose second movie is still copying, counts as
+// unfinished. Checked from the entry workflow, on the run folder (not
+// --bam_dir), before any task runs.
 def revioUnfinishedCells( root ) {
-    def cells = files("${root}/*/metadata", type: 'dir') + files("${root}/metadata", type: 'dir')
-    return cells
-        .findAll { m -> m.exists() && !files("${m}/*.transferdone") }
-        .collect { m -> m.parent.name }
-        .unique()
+    def cells = ( files("${root}/*", type: 'dir') + [ root ] )
+        .findAll { c -> c.resolve('hifi_reads').isDirectory() || c.resolve('pb_formats').isDirectory() || c.resolve('metadata').isDirectory() }
+    return cells.collectMany { c ->
+        def movies = ( files("${c}/hifi_reads/*.bam") + files("${c}/pb_formats/*.consensusreadset.xml") + files("${c}/metadata/*") )
+            .findAll { f -> f.exists() }
+            .collect { f -> f.name.tokenize('.')[0] }
+            .findAll { m -> m ==~ /m\d+[a-z]?_\d{6}_\d{6}_s\d+/ }
+            .unique()
+        movies.findAll { m -> !c.resolve("metadata/${m}.transferdone").exists() }
+            .collect { m -> "${c.name}/metadata/${m}.transferdone".toString() }
+    }.unique().sort()
 }
 
 // HiFi reads per sample and the Not Barcoded count, from each barcoded cell's
@@ -562,11 +590,15 @@ workflow PACBIO_QC {
     // unassigned_<well>.hifi_reads.bam, but not a sample and not QC'd.
     ch_unassigned = ch_run.flatMap { meta, run_dir ->
         def root = bam_dir ?: run_dir
-        ( files("${root}/**/*.hifi_reads.unassigned.bam") + files("${root}/*.hifi_reads.unassigned.bam") )
+        def bams = ( files("${root}/**/*.hifi_reads.unassigned.bam") + files("${root}/*.hifi_reads.unassigned.bam") )
             .findAll { f -> f.exists() }
             .unique()
             .sort()
-            .collect { bam -> tuple( meta + [ id: "unassigned_${revioCell( bam )?.name ?: revioBamName( bam )?.movie ?: 'cell'}".toString(), unassigned: true ], bam ) }
+            .collect { bam ->
+                def movie = revioBamName( bam )?.movie
+                [ meta: meta + [ id: "unassigned_${revioCell( bam )?.name ?: movie ?: 'cell'}".toString(), movie: movie, unassigned: true ], bam: bam ]
+            }
+        uniqueIds( bams, [ 'movie' ] ).collect { r -> tuple( r.meta, r.bam ) }
     }
 
     // flatMap, not map + filter: ch_samples is a value channel (see ILLUMINA_QC).

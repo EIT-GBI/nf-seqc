@@ -35,9 +35,11 @@ process SAMPLE_METADATA {
 
     script:
     def out = sampleMetadataQuote( "${meta.run}_samplesheet.csv" )
+    // Illumina: the sample sheet of the analysis the rest of the QC reads
+    def analysis = meta.analysis ? "--analysis ${sampleMetadataQuote( meta.analysis )}" : ''
     """
     status=0
-    ${meta.platform}_sample_metadata.py ${sampleMetadataQuote( run_dir )} -o ${out} 2> extract.err || status=\$?
+    ${meta.platform}_sample_metadata.py ${sampleMetadataQuote( run_dir )} ${analysis} -o ${out} 2> extract.err || status=\$?
     cat extract.err >&2
     if [ "\$status" -ne 0 ]; then
         if grep -qE '^No .*(found|extracted)' extract.err; then

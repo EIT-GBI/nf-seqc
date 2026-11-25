@@ -21,11 +21,19 @@ def loadingBgcols() { return [ under: 'rgba(70,130,180,0.4)', optimal: 'rgba(0,1
 // samples: [ name: reads ] for the assigned samples; unassigned: reads that
 // went to no sample; barcodes: the demultiplexer's top unassigned index pairs,
 // as [ lane:, index:, reads: ] maps (empty when it lists none). Returns
-// [ samples, unassigned, total, even, barcodes ], or null when there is nothing
-// to report on. `even` is one sample's share of all reads if the assigned reads
-// were split evenly. A platform that knows the PhiX spike-in share adds
-// phix_pct (% of all reads) and phix_source to the map (see withPhix()).
-def demuxSummary( Map samples, long unassigned, List barcodes ) {
+// [ samples, unassigned, total, even, barcodes, pools ], or null when there is
+// nothing to report on. `even` is one sample's share of all reads if the
+// assigned reads were split evenly. A platform that knows the PhiX spike-in
+// share adds phix_pct (% of all reads) and phix_source to the map (see
+// withPhix()).
+//
+// pools: [ sample: [ pool: reads ] ], where a pool is what was loaded
+// separately: an AVITI or Illumina lane (PacBio and Nanopore pass none, so
+// their SMRT Cells and flow cells share the run-wide split). Two lanes
+// can hold two different pools of different sizes, so a sample's even split
+// is that of the samples sharing its pool(s) (expectedShare()); [:] or one
+// pool gives the run-wide split.
+def demuxSummary( Map samples, long unassigned, List barcodes, Map pools = [:] ) {
     def assigned = samples.values().sum() ?: 0L
     def total    = assigned + unassigned
     if ( !total || !samples ) {
@@ -37,7 +45,32 @@ def demuxSummary( Map samples, long unassigned, List barcodes ) {
         total:      total,
         even:       100.0 * assigned / total / samples.size(),
         barcodes:   barcodes,
+        pools:      pools.findAll { id, _p -> samples.containsKey( id ) },
     ]
+}
+
+// Each pool's even split, as a share of all reads: its assigned reads over the
+// samples in it, [ pool: % ]. Empty when the run has one pool or none known.
+def poolEven( demux ) {
+    def pools = demux.pools ?: [:]
+    def names = pools.values().collectMany { p -> p.keySet() as List }.unique()
+    if ( names.size() < 2 ) {
+        return [:]
+    }
+    return names.collectEntries { pool ->
+        def in_pool = pools.findAll { _id, p -> p.containsKey( pool ) }
+        def reads   = in_pool.values().sum { p -> p[ pool ] as long } ?: 0L
+        [ ( pool ): 100.0 * reads / demux.total / in_pool.size() ]
+    }
+}
+
+// The share of all reads a sample would have if every pool it was in were
+// split evenly between that pool's samples; the run-wide even split for a
+// run of one pool.
+def expectedShare( demux, String id ) {
+    def even = poolEven( demux )
+    def mine = demux.pools?.get( id )
+    return even && mine ? mine.keySet().sum { pool -> even[ pool ] } : demux.even
 }
 
 // The demux map with the PhiX spike-in's share of all reads, and where it came
@@ -81,11 +114,14 @@ def barcodeName( index, index2 ) {
     return index2 ? "${index}+${index2}" : "${index}"
 }
 
-// A sample's loading in the pool: under below half an even split, over above
+// A sample's loading in its pool: under below half an even split, over above
 // twice one, optimal in between.
-def sampleLoading( demux, long reads ) {
-    def pct = 100.0 * reads / demux.total
-    return pct < demux.even / 2 ? 'under' : pct > demux.even * 2 ? 'over' : 'optimal'
+def sampleLoading( demux, String id, long reads ) {
+    def pct  = 100.0 * reads / demux.total
+    def even = expectedShare( demux, id )
+    // A sample with no reads is under whatever its pool's split: a lane whose
+    // only sample got nothing has an even split of 0.
+    return !reads || pct < even / 2 ? 'under' : pct > even * 2 ? 'over' : 'optimal'
 }
 
 // MultiQC General Statistics columns: each sample's share of the run's reads
@@ -93,8 +129,9 @@ def sampleLoading( demux, long reads ) {
 // The cut-offs depend on how many samples share the run, so they are computed
 // here and given in the column description.
 def readShareTable( demux, String unassigned_label ) {
-    def under = String.format( '%.2f', demux.even / 2 )
-    def over  = String.format( '%.2f', demux.even * 2 )
+    def cutoffs = poolEven( demux )
+        ? 'of the samples in its lane (lanes holding pools of different sizes get different cut-offs): under below half of it, over above twice'
+        : "of the pool: under below ${String.format( '%.2f', demux.even / 2 )}%, over above ${String.format( '%.2f', demux.even * 2 )}%"
     def header = [
         "# id: 'demux_read_share'",
         "# plot_type: 'generalstats'",
@@ -109,11 +146,11 @@ def readShareTable( demux, String unassigned_label ) {
         "#     loading:",
         "#         title: 'Loading'",
         "#         namespace: 'Demultiplexing'",
-        "#         description: 'Share of reads against an even split of the pool: under below ${under}%, over above ${over}%'",
+        "#         description: 'Share of reads against an even split ${cutoffs}'",
     ] + bgcols( loadingBgcols() ) + [
         "Sample\tpct_reads\tloading",
     ]
-    def rows = demux.samples.collect { id, n -> "${id}\t${100.0 * n / demux.total}\t${sampleLoading( demux, n )}" }
+    def rows = demux.samples.collect { id, n -> "${id}\t${100.0 * n / demux.total}\t${sampleLoading( demux, id, n )}" }
     return ( header + rows ).join('\n') + '\n'
 }
 
@@ -132,7 +169,7 @@ def demuxSummaryTable( run_id, demux, max_undetermined, String source, String un
         log.warn "${caller}: ${String.format('%.1f', pct_unassigned)}% of reads in ${run_id} are ${unassigned_label} (above --max_undetermined ${max_undetermined}%)${phix_note}."
     }
     def counts = [ under: 0, optimal: 0, over: 0 ]
-    demux.samples.each { _id, n -> counts[ sampleLoading( demux, n ) ] += 1 }
+    demux.samples.each { id, n -> counts[ sampleLoading( demux, id, n ) ] += 1 }
     def header = [
         "# id: 'demux_summary'",
         "# section_name: 'Demultiplexing'",
@@ -188,6 +225,12 @@ def demuxSummaryTable( run_id, demux, max_undetermined, String source, String un
     return header.join('\n') + '\n'
 }
 
+// An index read of only G and N is no index at all: on two-colour chemistry a
+// dark cycle reads as G (unindexed PhiX, empty clusters).
+def noIndex( index ) {
+    return index.toString() ==~ /[GN+]+/
+}
+
 // The commonest unassigned index pairs, top `per_lane` in each lane, as a
 // table of its own. MultiQC cannot move a section out of its module, and the
 // demultiplexers' own lists sit inside bclconvert / bases2fastq, so this one
@@ -206,15 +249,22 @@ def unknownBarcodesTable( demux, String source, String unassigned_label, int per
         .groupBy { b -> b.lane as int }
         .sort()
         .collectMany { _lane, bs -> bs.sort { b -> -b.reads }.take( per_lane ) }
-    def sample_sized = demux.even / 2
-    def missing = rows.findAll { b -> 100.0 * b.reads / demux.total >= sample_sized }
+    // As many reads as an under-loaded sample of its lane: half that lane's
+    // even split (the run's, with one lane). A barcode of only G and N is no
+    // index at all (unindexed PhiX, empty clusters read as dark cycles), so
+    // it is never taken for a missing sample.
+    def lane_even = poolEven( demux )
+    def missing   = rows.findAll { b -> !noIndex( b.index ) && 100.0 * b.reads / demux.total >= ( lane_even[ b.lane.toString() ] ?: demux.even ) / 2 }
+    def cutoff = lane_even
+        ? 'half the even split of its lane'
+        : "${String.format('%.2f', demux.even / 2)}% of all reads"
     if ( missing ) {
-        log.warn "${caller}: ${missing.size()} ${unassigned_label} barcode(s) have as many reads as a sample (at least ${String.format('%.2f', sample_sized)}% of the run): ${missing.collect { b -> "L${b.lane} ${b.index}" }.join(', ')}. Check the sample sheet."
+        log.warn "${caller}: ${missing.size()} ${unassigned_label} barcode(s) have as many reads as an under-loaded sample (${cutoff}): ${missing.collect { b -> "L${b.lane} ${b.index}" }.join(', ')}. Check the sample sheet."
     }
     def header = [
         "# id: 'demux_unknown_barcodes'",
         "# section_name: '${unassigned_label} barcodes'",
-        "# description: 'The ${per_lane} commonest index pairs per lane that matched no sample, from ${source}. A barcode with many reads here is often a sample missing from the sample sheet, or one with its index reverse-complemented. Flagged when a barcode has at least ${String.format('%.2f', sample_sized)}% of all reads, the share below which a sample counts as under-loaded.'",
+        "# description: 'The ${per_lane} commonest index pairs per lane that matched no sample, from ${source}. A barcode with many reads here is often a sample missing from the sample sheet, or one with its index reverse-complemented. Flagged when a barcode has at least ${cutoff}, the share below which a sample counts as under-loaded; never for an index of only G and N (no index read).'",
         "# plot_type: 'table'",
         "# pconfig:",
         "#     id: 'demux_unknown_barcodes_table'",
@@ -241,14 +291,14 @@ def unknownBarcodesTable( demux, String source, String unassigned_label, int per
         "#     flag:",
         "#         title: 'Flag'",
         "#         scale: false",
-        "#         description: 'missing from samplesheet: at least ${String.format('%.2f', sample_sized)}% of all reads, as many as an under-loaded sample, so likely a sample left out of the sample sheet or entered with the wrong index'",
+        "#         description: 'missing from samplesheet: at least ${cutoff}, as many as an under-loaded sample, so likely a sample left out of the sample sheet or entered with the wrong index'",
     ] + bgcols( [ 'missing from samplesheet': loadingBgcols().over ] ) + [
         "Barcode\treads\tpct_total\tpct_unassigned\tflag",
     ]
     def lines = rows.collect { b ->
         def pct_total      = 100.0 * b.reads / demux.total
         def pct_unassigned = demux.unassigned ? 100.0 * b.reads / demux.unassigned : 0
-        def flag           = pct_total >= sample_sized ? 'missing from samplesheet' : ''
+        def flag           = b in missing ? 'missing from samplesheet' : ''
         "L${b.lane} ${b.index}\t${b.reads}\t${pct_total}\t${pct_unassigned}\t${flag}"
     }
     return ( header + lines ).join('\n') + '\n'
