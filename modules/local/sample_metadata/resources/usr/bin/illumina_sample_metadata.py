@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import glob
 import re
 import sys
@@ -64,11 +65,22 @@ OUTPUT_COLUMNS = [
 DATA_SECTIONS = ("BCLConvert_Data", "Data")
 
 
+
+def sheet_text(path: Path) -> str:
+    """The file's text: UTF-8 (BOM allowed), else Windows-1252, as Excel on
+    Windows saves a CSV. Without the fallback a cp1252 sheet would be skipped
+    and the run would go on without a sample sheet."""
+    try:
+        return path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        print(f"WARNING: {path} is not UTF-8; read as Windows-1252", file=sys.stderr)
+        return path.read_text(encoding="cp1252")
+
 def read_sections(path: Path) -> dict[str, list[list[str]]]:
     """Split an Illumina sample sheet into {section: rows}, trailing empty cells removed."""
     sections: dict[str, list[list[str]]] = {}
     current = None
-    with open(path, newline="", encoding="utf-8-sig") as fh:
+    with io.StringIO(sheet_text(path), newline="") as fh:
         for row in csv.reader(fh):
             while row and not row[-1].strip():
                 row.pop()
@@ -109,8 +121,11 @@ def analysis_number(path: Path) -> int:
     return -1
 
 
-def find_sample_sheet(run_dir: Path) -> Path | None:
-    for pattern in ("Analysis/*/Data/Reports/SampleSheet.csv", "Analysis/*/Data/SampleSheet.csv"):
+def find_sample_sheet(run_dir: Path, analysis: str | None = None) -> Path | None:
+    """The run's sample sheet: that of Analysis/<analysis> when given, else of
+    the latest analysis (on-instrument re-analyses add Analysis/2, 3, ...)."""
+    which = analysis or "*"
+    for pattern in (f"Analysis/{which}/Data/Reports/SampleSheet.csv", f"Analysis/{which}/Data/SampleSheet.csv"):
         sheets = sorted(run_dir.glob(pattern), key=analysis_number)
         if sheets:
             return sheets[-1]
@@ -152,10 +167,10 @@ def parse_xml(path: Path):
 
 
 def run_info(run_dir: Path | None) -> dict[str, str]:
-    if run_dir is None:
-        return {}
-    info = parse_xml(run_dir / "RunInfo.xml")
-    params = parse_xml(run_dir / "RunParameters.xml")
+    # A sheet given on its own (no RunInfo.xml above it) still gets every
+    # column, empty: the rows are sorted on RunId.
+    info = parse_xml(run_dir / "RunInfo.xml") if run_dir else None
+    params = parse_xml(run_dir / "RunParameters.xml") if run_dir else None
 
     run = info.find(".//Run") if info is not None else None
     cycles = []
@@ -218,7 +233,7 @@ def extract_samples(sheet: Path, run_dir: Path | None) -> list[dict[str, str]]:
     return rows
 
 
-def resolve_inputs(inputs: list[str]) -> list[tuple[Path, Path | None]]:
+def resolve_inputs(inputs: list[str], analysis: str | None = None) -> list[tuple[Path, Path | None]]:
     """Each input (run folder, sample sheet, or glob of either) -> (sheet, run_dir)."""
     paths: list[Path] = []
     for item in inputs:
@@ -228,7 +243,7 @@ def resolve_inputs(inputs: list[str]) -> list[tuple[Path, Path | None]]:
     pairs, seen = [], set()
     for p in paths:
         if p.is_dir():
-            sheet = find_sample_sheet(p)
+            sheet = find_sample_sheet(p, analysis)
             if sheet is None:
                 print(f"WARNING: no sample sheet found in {p}", file=sys.stderr)
                 continue
@@ -250,9 +265,10 @@ def main():
     )
     parser.add_argument("inputs", nargs="+", help="Run folders, sample sheet CSVs, and/or glob patterns")
     parser.add_argument("-o", "--output", default="illumina_samples_combined.csv", help="Combined output CSV")
+    parser.add_argument("--analysis", help="Read the sample sheet of Analysis/<n> (default: the latest analysis)")
     args = parser.parse_args()
 
-    pairs = resolve_inputs(args.inputs)
+    pairs = resolve_inputs(args.inputs, args.analysis)
     if not pairs:
         raise SystemExit("No sample sheets found.")
 

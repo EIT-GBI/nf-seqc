@@ -204,6 +204,7 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 | `--platform` | auto-detect | force a platform |
 | `--run_id` | run dir name | overrides the run label |
 | `--fastq_dir` | — | Illumina: FASTQ live outside the run folder |
+| `--illumina_analysis` | latest | Illumina: report on `Analysis/<n>`. A re-analysis on the instrument adds `Analysis/2`, `3`, … beside `Analysis/1`, each with its own FASTQ; by default the latest is used (with a warning naming the others). To publish a later re-analysis of a run already delivered, run again with `--overwrite`: files of samples that are no longer in the analysis stay, so clear the old folder first if that matters |
 | `--pod5_dir` | — | Nanopore: POD5 live outside the run folder |
 | `--barcode_kit` | — | Nanopore: barcoding kit (e.g. `SQK-RBK114-24`) when `final_summary` does not name one |
 | `--min_barcode_reads` | `100` | Nanopore: fewest reads for a barcode to be reported as a sample; reads of smaller barcodes count as unclassified |

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import glob
 import json
 import re
@@ -70,11 +71,22 @@ RUN_KEYS = [
 ]
 
 
+
+def sheet_text(path: Path) -> str:
+    """The file's text: UTF-8 (BOM allowed), else Windows-1252, as Excel on
+    Windows saves a CSV. Without the fallback a cp1252 sheet would be skipped
+    and the run would go on without a sample sheet."""
+    try:
+        return path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        print(f"WARNING: {path} is not UTF-8; read as Windows-1252", file=sys.stderr)
+        return path.read_text(encoding="cp1252")
+
 def read_sections(path: Path) -> dict[str, list[list[str]]]:
     """Split RunManifest.csv into {SECTION: rows}; comments and blank cells dropped."""
     sections: dict[str, list[list[str]]] = {}
     current = None
-    with open(path, newline="", encoding="utf-8-sig") as fh:
+    with io.StringIO(sheet_text(path), newline="") as fh:
         for row in csv.reader(fh):
             while row and not row[-1].strip():
                 row.pop()

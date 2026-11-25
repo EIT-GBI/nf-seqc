@@ -131,6 +131,32 @@ def flag( value ) {
     return value instanceof CharSequence ? value.toString().toBoolean() : value as boolean
 }
 
+// The on-instrument analysis an Illumina run is reported from: Analysis/<n>
+// holds one BCL Convert pass (FASTQ, Reports/, SampleSheet.csv), and a
+// re-analysis on the instrument adds Analysis/2, 3, ... beside it, each with a
+// full set of FASTQ. The latest is taken unless --illumina_analysis names one;
+// null for a run without Analysis/ (FASTQ elsewhere, or --fastq_dir).
+def illuminaAnalysis( run_dir, wanted ) {
+    def found = files("${run_dir}/Analysis/*", type: 'dir')
+        .findAll { d -> d.name.isInteger() }
+        .collect { d -> d.name.toInteger() }
+        .sort()
+    if ( wanted ) {
+        def n = wanted.toString()
+        if ( !n.isInteger() || !( n.toInteger() in found ) ) {
+            error "--illumina_analysis ${n}: no Analysis/${n} in ${run_dir}${found ? " (it has ${found.collect { a -> "Analysis/${a}" }.join(', ')})" : ''}."
+        }
+        return n.toInteger()
+    }
+    if ( !found ) {
+        return null
+    }
+    if ( found.size() > 1 ) {
+        log.warn "Run ${run_dir.name} has ${found.size()} analyses (${found.collect { a -> "Analysis/${a}" }.join(', ')}); reporting on the latest, Analysis/${found.last()}. Pick another with --illumina_analysis <n>."
+    }
+    return found.last()
+}
+
 // Refuse to report on a run the instrument has not finished writing (Illumina:
 // RTAComplete.txt + CopyComplete.txt, as the original metrics collector did):
 // metrics read from a partial run are misleading rather than merely
@@ -202,9 +228,11 @@ workflow {
     // An unfinished run is refused before the output directory is claimed:
     // claiming first would leave qc/nf-seqc_session.txt behind, and refuse
     // the retry once the instrument has finished writing.
+    def analysis = null
     if ( platform == 'illumina' ) {
         def missing = [ 'RTAComplete.txt', 'CopyComplete.txt' ].findAll { m -> !file("${run_dir}/${m}").exists() }
         requireRunComplete( run_id, missing, flag( params.allow_incomplete ) )
+        analysis = fastq_dir ? null : illuminaAnalysis( run_dir, params.illumina_analysis )
     }
     else if ( platform == 'nanopore' ) {
         def unfinished = nanoporeUnfinished( pod5_dir ?: run_dir ).collect { acq -> "${acq}/final_summary_*.txt".toString() }
@@ -217,7 +245,7 @@ workflow {
     claimOutput( workflow.outputDir, workflow.sessionId.toString(), workflow.resume, flag( params.overwrite ), by_name )
     log.info "nf-seqc: publishing to ${workflow.outputDir}"
 
-    ch_run = channel.value( tuple( [ id: run_id, run: run_id, platform: platform ], run_dir ) )
+    ch_run = channel.value( tuple( [ id: run_id, run: run_id, platform: platform, analysis: analysis ], run_dir ) )
 
     ch_reads    = channel.empty()
     ch_bam      = channel.empty()

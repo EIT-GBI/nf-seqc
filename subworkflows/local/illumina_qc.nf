@@ -30,7 +30,8 @@ include { demuxSummary; withPhix; withPhixSampleReads; phixSample; barcodeName; 
 // on-instrument (NextSeq 1000/2000), Reports/ in a bcl-convert output dir. On-instrument
 // runs also leave a Demultiplex_Stats.csv under RunInstrumentAnalyticsMetrics/ with the
 // sample names and indices anonymised (0001, ELIDED), so a directory called Reports wins.
-// Several analyses can leave several; the first one sorted wins.
+// Called on one analysis (analysisRoot()), so several reports mean a
+// non-standard layout; the first one sorted wins.
 def bclConvertReports( root ) {
     def found = ( files("${root}/**/Demultiplex_Stats.csv") + files("${root}/Demultiplex_Stats.csv") )
         .findAll { f -> f.exists() }
@@ -65,8 +66,11 @@ def bclConvertFiles( reports, run_dir ) {
 // report on.
 def demuxReads( stats ) {
     def reads = [:]
+    def pools = [:] // [ sample: [ lane: reads ] ]: lanes may hold separate pools
     stats.splitCsv( header: true ).each { row ->
         reads[row.SampleID] = ( reads[row.SampleID] ?: 0L ) + ( row['# Reads'] as long )
+        def lanes = pools.computeIfAbsent( row.SampleID ) { _k -> [:] }
+        lanes[ row.Lane.toString() ] = ( lanes[ row.Lane.toString() ] ?: 0L ) + ( row['# Reads'] as long )
     }
     def unknown  = stats.resolveSibling('Top_Unknown_Barcodes.csv')
     def barcodes = unknown.exists()
@@ -79,7 +83,7 @@ def demuxReads( stats ) {
     // share is InterOp's (the PhiX column), which counts it wherever it went.
     def samples = reads.findAll { id, _n -> id != 'Undetermined' && !phixSample( id ) }
     def phix    = reads.findAll { id, _n -> phixSample( id ) }.values().sum() ?: 0L
-    return withPhixSampleReads( demuxSummary( samples, reads['Undetermined'] ?: 0L, barcodes ), phix as long )
+    return withPhixSampleReads( demuxSummary( samples, reads['Undetermined'] ?: 0L, barcodes, pools ), phix as long )
 }
 
 // The share of PF reads the instrument aligned to PhiX, from
@@ -99,6 +103,14 @@ def phixAligned( csv ) {
     }
     def pct = aligned.toDouble()
     return pct == 0 && !error?.isDouble() ? null : pct
+}
+
+// Where the FASTQ and BCL Convert reports of the chosen analysis are:
+// Analysis/<n> (meta.analysis, picked in main.nf), or the whole run folder
+// for a run without Analysis/. Globbing the whole folder would collect every
+// analysis's FASTQ when the run was re-analysed on the instrument.
+def analysisRoot( meta, run_dir ) {
+    return meta.analysis ? run_dir.resolve( "Analysis/${meta.analysis}" ) : run_dir
 }
 
 // Reads BCL Convert could not assign to a sample: always delivered, QC'd only
@@ -122,7 +134,7 @@ workflow ILLUMINA_QC {
     // NextSeq 1000/2000, Alignment_*/.../Fastq on older setups. Glob instead of
     // hardcoding; --fastq_dir overrides when the FASTQ live outside the run dir.
     ch_pairs = ch_run.flatMap { meta, run_dir ->
-        def root = fastq_dir ?: run_dir
+        def root = fastq_dir ?: analysisRoot( meta, run_dir )
         def r1s  = ( files("${root}/**/*_R1_001.fastq.gz") + files("${root}/*_R1_001.fastq.gz") )
             .findAll { f -> f.exists() }
             .unique()
@@ -131,13 +143,16 @@ workflow ILLUMINA_QC {
             error "ILLUMINA_QC: no *_R1_001.fastq.gz found under ${root}. Has the run been demultiplexed? Point --fastq_dir at the FASTQ directory if they live elsewhere."
         }
 
+        // PhiX given its own index is the spike-in, not a sample: as on AVITI,
+        // its FASTQ is neither QC'd nor delivered (its share is in the
+        // Demultiplexing table).
         r1s.sort().collect { r1 ->
             def r2  = file( r1.toString().replace('_R1_001.fastq.gz', '_R2_001.fastq.gz') )
             def sid = r1.name
                 .replaceAll(/_S\d+(_L\d{3})?_R1_001\.fastq\.gz$/, '')
                 .replaceAll(/_R1_001\.fastq\.gz$/, '')
             tuple( meta + [ id: sid, single_end: !r2.exists(), undetermined: isUndetermined( r1 ) ], r1, r2.exists() ? r2 : [] )
-        }
+        }.findAll { m, _r1, _r2 -> !phixSample( m.id ) }
     }
 
     FASTQC_FASTQC( ch_pairs.filter { meta, _r1, _r2 -> include_undetermined || !meta.undetermined } )
@@ -148,7 +163,7 @@ workflow ILLUMINA_QC {
     // any run without a Demultiplex_Stats.csv.
     ch_reports = ch_run
         .flatMap { meta, run_dir ->
-            def reports = bclConvertReports( fastq_dir ?: run_dir )
+            def reports = bclConvertReports( fastq_dir ?: analysisRoot( meta, run_dir ) )
             reports ? [ tuple( meta, run_dir, reports ) ] : []
         }
 
