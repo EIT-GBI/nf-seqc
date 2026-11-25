@@ -79,11 +79,11 @@ Deliberate divergences, all documented in the script's module docstring:
 **`modules.versions` is the source of truth for module versions, not the submodule pointers.** The flow is:
 
 1. Renovate (config inherited from `EIT-GBI/nf-renovate-config`) opens a PR editing a `nf-mod-<tool>=<version>` line. The shared preset suppresses PATCH propagation and routes MAJOR bumps to the dashboard, so only MINOR bumps land automatically.
-2. `sync-submodules.yml` fires on push to `main` touching `modules.versions` **only when the head commit message starts with `feat(deps)`**. It maps repo name → submodule path via `.gitmodules`, checks out tag `v<version>`, and commits `chore(submodules) sync pointers to modules.versions`.
-3. `auto-release.yml` fires on that `chore(submodules)` commit and cuts a MINOR release.
+2. `sync-submodules-pr.yml` moves the matching submodule to tag `v<version>` **on the PR branch itself** (repo name → submodule path via `.gitmodules`), so CI tests the new module and the merge carries both. The required "Submodules match modules.versions" CI check blocks the merge until they agree. Its commit message deliberately starts with neither `feat(deps)` nor `chore(submodules)`.
+3. The PR is released like any other, by `release.yml` from its `bump:*` label: a Renovate PR without one is blocked by `pr-label-check.yml`. `sync-submodules.yml` (on a `feat(deps)` push to `main`) and `auto-release.yml` (on its `chore(submodules)` commit) are now only a fallback for a pointer that reached `main` out of step; normally they find nothing to change.
 4. `flag-major-updates.yml` runs weekday mornings and opens a deduplicated tracking issue per available major.
 
-Never hand-edit a submodule pointer to change a version — edit `modules.versions` and let the sync workflow move it, or the two drift.
+Never move a submodule pointer on its own — edit `modules.versions` (by hand, move the pointer to the same tag in the same commit), or the two drift.
 
 **Containers: never `:latest` outside `-profile dev`** (same scheme as `nf-dnaseq`). The `nf-mod-*` processes carry no `container` directive. Released repos ship `conf/module.config` assigning `ghcr.io/eit-gbi/nf-mod-<tool>:v<version>`, kept in step with the release by that repo's `release.yml`; `nextflow.config` includes those before `profiles` (currently fastqc, interop, dorado; nf-mod-samtools was dropped when Nanopore stopped making FASTQ), so moving the submodule moves the image. An nf-mod with no release yet would be pinned in the same section to the `sha-<short>` image of the exact commit its submodule points at. The `dev` profile points every nf-mod image back at `:latest` for testing unreleased module changes — add a line there for each new module. Local-module images (bases2fastq, multiqc, ont_summary_stats, pacbio_cell_qc, sample_metadata, bam_check) are pinned in the `process {}` block after `profiles`.
 

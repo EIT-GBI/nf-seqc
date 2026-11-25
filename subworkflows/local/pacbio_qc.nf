@@ -108,15 +108,23 @@ def revioSamples( meta, List bams ) {
     }
 }
 
-// Cells whose transfer has not finished: Revio writes
-// metadata/<movie>.transferdone once a cell is fully copied off the
-// instrument. Checked from the entry workflow, before any task runs.
+// Transfers that have not finished, as the transferdone files still missing.
+// Revio writes metadata/<movie>.transferdone once a movie is fully copied off
+// the instrument. Each movie a SMRT Cell holds (its HiFi BAM and dataset XML
+// name it) needs its own, so a cell whose metadata/ does not exist yet, or a
+// well whose second movie is still copying, counts as unfinished. Checked from
+// the entry workflow, before any task runs.
 def revioUnfinishedCells( root ) {
-    def cells = files("${root}/*/metadata", type: 'dir') + files("${root}/metadata", type: 'dir')
-    return cells
-        .findAll { m -> m.exists() && !files("${m}/*.transferdone") }
-        .collect { m -> m.parent.name }
-        .unique()
+    def cells = ( files("${root}/*", type: 'dir') + [ root ] )
+        .findAll { c -> c.resolve('hifi_reads').isDirectory() || c.resolve('pb_formats').isDirectory() || c.resolve('metadata').isDirectory() }
+    return cells.collectMany { c ->
+        def movies = ( files("${c}/hifi_reads/*.bam") + files("${c}/pb_formats/*.consensusreadset.xml") )
+            .findAll { f -> f.exists() }
+            .collect { f -> f.name.tokenize('.')[0] }
+            .unique()
+        movies.findAll { m -> !c.resolve("metadata/${m}.transferdone").exists() }
+            .collect { m -> "${c.name}/metadata/${m}.transferdone".toString() }
+    }.unique().sort()
 }
 
 // HiFi reads per sample and the Not Barcoded count, from each barcoded cell's

@@ -131,13 +131,14 @@ def flag( value ) {
     return value instanceof CharSequence ? value.toString().toBoolean() : value as boolean
 }
 
-// Refuse to report on a run the instrument has not finished writing. Mirrors the
-// RTAComplete.txt + CopyComplete.txt gate in
-// EIT-GBI/Automate-Seq-Run-Metrics-Collection: InterOp metrics read from a
-// partial run are misleading rather than merely incomplete.
+// Refuse to report on a run the instrument has not finished writing (Illumina:
+// RTAComplete.txt + CopyComplete.txt, as the original metrics collector did):
+// metrics read from a partial run are misleading rather than merely
+// incomplete.
 //
-// `missing` names what is absent: marker files (Illumina) or unfinished SMRT
-// Cells (PacBio).
+// `missing` names what is absent: marker files (Illumina), final_summary of
+// unfinished acquisitions (Nanopore) or transferdone of unfinished movies
+// (PacBio).
 def requireRunComplete( String run_id, List<String> missing, boolean allow_incomplete ) {
     if ( !missing ) {
         return
@@ -181,15 +182,13 @@ workflow {
         }
     }
 
-    claimOutput( workflow.outputDir, workflow.sessionId.toString(), workflow.resume, flag( params.overwrite ), by_name )
-
     log.info "nf-seqc: run '${run_id}' on platform '${platform}'"
     log.info "nf-seqc: reading ${run_dir}"
-    log.info "nf-seqc: publishing to ${workflow.outputDir}"
 
     // params are read here, in the entry workflow, and handed to the
     // subworkflows as inputs: reading params anywhere else is deprecated.
-    // Directory overrides are checked now, so a typo fails before any task.
+    // Directory overrides are checked now, so a typo fails before any task,
+    // and before the output directory is claimed.
     def fastq_dir = params.fastq_dir ? file( params.fastq_dir, checkIfExists: true ) : null
     def pod5_dir  = params.pod5_dir  ? file( params.pod5_dir,  checkIfExists: true ) : null
     def bam_dir   = params.bam_dir   ? file( params.bam_dir,   checkIfExists: true ) : null
@@ -199,6 +198,24 @@ workflow {
     def max_undetermined = params.max_undetermined as BigDecimal
     def pacbio_min_p1    = params.pacbio_min_p1 as BigDecimal
     def pacbio_max_p2    = params.pacbio_max_p2 as BigDecimal
+
+    // An unfinished run is refused before the output directory is claimed:
+    // claiming first would leave qc/nf-seqc_session.txt behind, and refuse
+    // the retry once the instrument has finished writing.
+    if ( platform == 'illumina' ) {
+        def missing = [ 'RTAComplete.txt', 'CopyComplete.txt' ].findAll { m -> !file("${run_dir}/${m}").exists() }
+        requireRunComplete( run_id, missing, flag( params.allow_incomplete ) )
+    }
+    else if ( platform == 'nanopore' ) {
+        def unfinished = nanoporeUnfinished( pod5_dir ?: run_dir ).collect { acq -> "${acq}/final_summary_*.txt".toString() }
+        requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
+    }
+    else if ( platform == 'pacbio' ) {
+        requireRunComplete( run_id, revioUnfinishedCells( bam_dir ?: run_dir ), flag( params.allow_incomplete ) )
+    }
+
+    claimOutput( workflow.outputDir, workflow.sessionId.toString(), workflow.resume, flag( params.overwrite ), by_name )
+    log.info "nf-seqc: publishing to ${workflow.outputDir}"
 
     ch_run = channel.value( tuple( [ id: run_id, run: run_id, platform: platform ], run_dir ) )
 
@@ -214,8 +231,6 @@ workflow {
     def check_reads = 10000       // reads scanned for modified-base tags per BAM
 
     if ( platform == 'illumina' ) {
-        def missing = [ 'RTAComplete.txt', 'CopyComplete.txt' ].findAll { m -> !file("${run_dir}/${m}").exists() }
-        requireRunComplete( run_id, missing, flag( params.allow_incomplete ) )
         ILLUMINA_QC( ch_run, fastq_dir, flag( params.include_undetermined ), max_undetermined )
         // The FASTQ are the instrument's, so copy them to make them publishable.
         COPY_READS( ILLUMINA_QC.out.reads.map { meta, fastqs -> tuple( meta, fastqs, fastqs.collect { f -> f.name } ) } )
@@ -234,8 +249,6 @@ workflow {
         ch_versions = AVITI_QC.out.versions
     }
     else if ( platform == 'nanopore' ) {
-        def unfinished = nanoporeUnfinished( pod5_dir ?: run_dir ).collect { acq -> "${acq}/final_summary_*.txt".toString() }
-        requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
         NANOPORE_QC( ch_run, pod5_dir, flag( params.include_failed ), params.barcode_kit, params.basecall.model, max_undetermined, params.min_barcode_reads as long )
         ch_bam      = NANOPORE_QC.out.bam
         ch_check    = NANOPORE_QC.out.bam
@@ -244,8 +257,6 @@ workflow {
         ch_versions = NANOPORE_QC.out.versions
     }
     else if ( platform == 'pacbio' ) {
-        def unfinished = revioUnfinishedCells( bam_dir ?: run_dir ).collect { cell -> "${cell}/metadata/*.transferdone".toString() }
-        requireRunComplete( run_id, unfinished, flag( params.allow_incomplete ) )
         PACBIO_QC( ch_run, bam_dir, max_undetermined, pacbio_min_p1, pacbio_max_p2 )
         // The HiFi BAM are the instrument's, so copy them to make them
         // publishable, with their PacBio index (.bam.pbi) where there is one,
@@ -271,7 +282,7 @@ workflow {
     // bases its reads carry. Unassigned / unclassified BAMs are checked and
     // warned about, but get no General Statistics row of their own.
     BAM_CHECK( ch_check, check_reads )
-    def expect_mods = platform == 'nanopore' && params.basecall.modified_bases as boolean
+    def expect_mods = platform == 'nanopore' && params.basecall.modified_bases && params.basecall.modified_bases.toString() != 'false'
     ch_bam_check = BAM_CHECK.out.check
         .map { meta, tsv -> [ meta, bamCheckRow( tsv.text ) ] }
         .toList()
@@ -351,8 +362,7 @@ output {
     barcoding {
         path { meta, summary -> summary >> "qc/${meta.id}.barcoding_summary.txt" }
     }
-    // One-row-per-run CSV, column-compatible with the log kept by
-    // EIT-GBI/Automate-Seq-Run-Metrics-Collection so rows can be concatenated.
+    // One-row-per-run CSV: CSVs from several runs concatenate into one table.
     metrics {
         path 'qc'
     }

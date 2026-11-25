@@ -46,7 +46,7 @@ where scientists read them:
 > write there.
 The roots are `--prep_root` and `--publish_root`; `--outdir` overrides the
 destination. `--input <run_dir>` still takes any run folder, publishing to
-`--outdir` (default `results`).
+`--outdir` (default `results/<run folder name>`).
 
 Inside the run folder, what scientists open sits at the top and everything
 else is in `qc/`:
@@ -199,7 +199,7 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 | `--prep_root` | `/mnt/instrument-prep-zone/sequencing` | where instruments write runs |
 | `--publish_root` | `/mnt/lustre/users/$USER/nf-seqc-results` (temporary; production: `/mnt/instrument-data/sequencing`) | where `--instrument`/`--run` results are published |
 | `--input` | — | run directory, instead of `--instrument`/`--run` |
-| `--outdir` | `<publish_root>/<instrument>/<YYYY>/<run>`, or `results` with `--input` | output directory |
+| `--outdir` | `<publish_root>/<instrument>/<YYYY>/<run>`, or `results/<run>` with `--input` | output directory |
 | `--overwrite` | `false` | publish into a destination that already has results |
 | `--platform` | auto-detect | force a platform |
 | `--run_id` | run dir name | overrides the run label |
