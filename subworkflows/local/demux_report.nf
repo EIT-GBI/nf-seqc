@@ -150,7 +150,9 @@ def readShareTable( demux, String unassigned_label ) {
     ] + bgcols( loadingBgcols() ) + [
         "Sample\tpct_reads\tloading",
     ]
-    def rows = demux.samples.collect { id, n -> "${id}\t${100.0 * n / demux.total}\t${sampleLoading( demux, id, n )}" }
+    // Sorted, so the file (a MultiQC input) is the same on every run and
+    // -resume does not rerun MULTIQC for nothing.
+    def rows = demux.samples.sort().collect { id, n -> "${id}\t${100.0 * n / demux.total}\t${sampleLoading( demux, id, n )}" }
     return ( header + rows ).join('\n') + '\n'
 }
 

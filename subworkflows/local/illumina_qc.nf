@@ -83,7 +83,10 @@ def demuxReads( stats ) {
     // share is InterOp's (the PhiX column), which counts it wherever it went.
     def samples = reads.findAll { id, _n -> id != 'Undetermined' && !phixSample( id ) }
     def phix    = reads.findAll { id, _n -> phixSample( id ) }.values().sum() ?: 0L
-    return withPhixSampleReads( demuxSummary( samples, reads['Undetermined'] ?: 0L, barcodes, pools ), phix as long )
+    def demux = withPhixSampleReads( demuxSummary( samples, reads['Undetermined'] ?: 0L, barcodes, pools ), phix as long )
+    // Its share, for the PhiX column when InterOp has none (the NextSeq 2000
+    // never aligns to PhiX): without it these reads would be in no row.
+    return demux && phix ? demux + [ phix_sample_pct: 100.0 * phix / demux.total ] : demux
 }
 
 // The share of PF reads the instrument aligned to PhiX, from
@@ -183,7 +186,9 @@ workflow ILLUMINA_QC {
     ch_demux_summary = ch_demux
         .combine( INTEROP_RUN_METRICS.out.metrics.map { _meta, csv -> [ phixAligned( csv ) ] } )
         .map { meta, demux, phix ->
-            def with_phix = withPhix( demux, phix, 'aligned to PhiX by the instrument (InterOp % Aligned), wherever it went: in Undetermined when PhiX has no index in the sample sheet' )
+            def with_phix = phix != null
+                ? withPhix( demux, phix, 'aligned to PhiX by the instrument (InterOp % Aligned), wherever it went: in Undetermined when PhiX has no index in the sample sheet' )
+                : withPhix( demux, demux.phix_sample_pct, 'assigned to the PhiX sample of the sample sheet by BCL Convert (unindexed PhiX in Undetermined is not counted: the instrument does not align to PhiX)' )
             demuxSummaryTable( meta.run, with_phix, max_undetermined, 'BCL Convert Demultiplex_Stats.csv', 'Undetermined', 'ILLUMINA_QC' )
         }
         .collectFile( name: 'demux_summary_mqc.tsv' )

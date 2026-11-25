@@ -337,7 +337,9 @@ def ontSampleTable( List samples, List stats ) {
     def by_flowcell = stats.collectEntries { meta, tsv ->
         [ ( meta.flowcell ): tsv.splitCsv( header: true, sep: '\t' ).collectEntries { r -> [ ( r.barcode ): r ] } ]
     }
-    def rows = samples.collect { meta, _bam ->
+    // Sorted by sample: samples arrive in task-completion order, and an
+    // unchanged file lets -resume skip MULTIQC.
+    def rows = samples.sort( false ) { s -> s[0].id }.collect { meta, _bam ->
         def r = by_flowcell[ meta.flowcell ]?.get( meta.barcode ?: 'all' )
         if ( !r ) {
             return null
@@ -610,7 +612,10 @@ workflow NANOPORE_QC {
         .map { key, metas, bams ->
             def first = metas.sort( false ) { m -> m.id }[0]
             def id    = key[1] ? "${key[0]}_fail" : key[0]
-            tuple( first.subMap( [ 'run', 'platform', 'flowcell', 'sample', 'aliases', 'status' ] ) + [ id: id.toString() ], bams )
+            // Sorted: groupTuple lists them in the order the basecaller tasks
+            // finished, and the order is part of the task hash, so -resume
+            // would otherwise demultiplex every flow cell again.
+            tuple( first.subMap( [ 'run', 'platform', 'flowcell', 'sample', 'aliases', 'status' ] ) + [ id: id.toString() ], bams.sort( false ) { b -> b.name } )
         }
 
     DORADO_DEMUX( ch_to_demux )
