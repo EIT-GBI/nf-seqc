@@ -28,7 +28,8 @@ def loadingBgcols() { return [ under: 'rgba(70,130,180,0.4)', optimal: 'rgba(0,1
 // withPhix()).
 //
 // pools: [ sample: [ pool: reads ] ], where a pool is what was loaded
-// separately (an AVITI or Illumina lane, a SMRT Cell, a flow cell). Two lanes
+// separately: an AVITI or Illumina lane (PacBio and Nanopore pass none, so
+// their SMRT Cells and flow cells share the run-wide split). Two lanes
 // can hold two different pools of different sizes, so a sample's even split
 // is that of the samples sharing its pool(s) (expectedShare()); [:] or one
 // pool gives the run-wide split.
@@ -118,7 +119,9 @@ def barcodeName( index, index2 ) {
 def sampleLoading( demux, String id, long reads ) {
     def pct  = 100.0 * reads / demux.total
     def even = expectedShare( demux, id )
-    return pct < even / 2 ? 'under' : pct > even * 2 ? 'over' : 'optimal'
+    // A sample with no reads is under whatever its pool's split: a lane whose
+    // only sample got nothing has an even split of 0.
+    return !reads || pct < even / 2 ? 'under' : pct > even * 2 ? 'over' : 'optimal'
 }
 
 // MultiQC General Statistics columns: each sample's share of the run's reads
@@ -127,7 +130,7 @@ def sampleLoading( demux, String id, long reads ) {
 // here and given in the column description.
 def readShareTable( demux, String unassigned_label ) {
     def cutoffs = poolEven( demux )
-        ? 'of the samples in its lane, cell or flow cell (pools of different sizes get different cut-offs): under below half of it, over above twice'
+        ? 'of the samples in its lane (lanes holding pools of different sizes get different cut-offs): under below half of it, over above twice'
         : "of the pool: under below ${String.format( '%.2f', demux.even / 2 )}%, over above ${String.format( '%.2f', demux.even * 2 )}%"
     def header = [
         "# id: 'demux_read_share'",

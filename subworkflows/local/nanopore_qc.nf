@@ -72,12 +72,14 @@ def ontPod5Folders( meta, root, boolean include_failed, barcode_kit ) {
     def folders = pod5s.collect { f -> f.parent }.unique()
     def records = folders.collect { dir ->
         // pod5_pass/barcode01/x.pod5 or pod5_pass/x.pod5 (unbarcoded)
+        // or, from --pod5_dir without MinKNOW's layout, <dir>/barcode01/x.pod5:
+        // the barcode folders' parent is then the acquisition.
+        def barcoded   = dir.name ==~ /barcode\d+|mixed|unclassified/
         def status_dir = dir.name.startsWith('pod5') ? dir : dir.parent
-        def acq        = status_dir.name.startsWith('pod5') ? status_dir.parent : dir
+        def acq        = status_dir.name.startsWith('pod5') ? status_dir.parent : barcoded ? dir.parent : dir
         def status     = status_dir.name.startsWith('pod5') ? status_dir.name : 'pod5'
         def summary    = files("${acq}/final_summary_*.txt").find { f -> f.exists() }
         def kv         = summary ? keyValues( summary ) : [:]
-        def barcoded   = dir.name ==~ /barcode\d+|mixed|unclassified/
         def flowcell   = kv.flow_cell_id ?: acq.name
         def run8       = ( kv.protocol_run_id ?: acq.name ).take(8)
         [
@@ -119,11 +121,14 @@ def supportedReadFolder( String name ) {
     return name in [ 'pod5_pass', 'pod5_fail', 'pod5' ]
 }
 
-// A kit that carries barcodes: a native, rapid or PCR barcoding kit names how
-// many (SQK-NBD114-96, SQK-RBK114-24), and an expansion kit (EXP-NBD104) is
-// one by itself. A ligation kit (SQK-LSK114) carries none.
+// A kit that carries barcodes, by the barcoding chemistries in ONT's kit
+// names: native (NBD, NBA), rapid (RBK, RAB, RLB), PCR (PBK, PCB, RPB, PBC),
+// 16S and multiplex ligation (MLK), with or without a count (SQK-NBD114-96,
+// SQK-RBK004, EXP-NBD196, SQK-NBD114.24). A ligation kit (SQK-LSK114, ULK)
+// or a non-barcoding expansion (EXP-FLP, EXP-MRT) carries none. Only used for
+// a warning.
 def barcodingKit( kit ) {
-    return kit && ( kit ==~ /.*-\d{2,3}$/ || kit.startsWith('EXP-') )
+    return kit && kit ==~ /(?i).*-(NBD|NBA|RBK|RAB|RLB|PBK|PCB|RPB|PBC|16S|MLK)\d.*/
 }
 
 // Read-folder layouts the pipeline does not handle yet (EIT-GBI/nf-seqc#24),
@@ -145,7 +150,7 @@ def nanoporeLayoutCheck( root, barcode_kit ) {
         .findAll { acq, ds ->
             def kv  = acquisitionSummary( acq )
             def kit = barcode_kit ?: protocolKit( kv.protocol )
-            barcodingKit( kit ) && !ds.any { d -> files("${d}/*", type: 'dir').any { b -> b.name ==~ /barcode\d+/ } }
+            barcodingKit( kit ) && !ds.any { d -> files("${d}/*", type: 'dir').any { b -> b.name ==~ /barcode\d+|mixed|unclassified/ } }
         }
         .collect { acq, _ds -> "${acq.name} (kit ${barcode_kit ?: protocolKit( acquisitionSummary( acq ).protocol )})".toString() }
     return [ errors: errors.unique(), warnings: warnings ]
@@ -174,9 +179,11 @@ def ontSamples( List demuxed ) {
             [ meta: meta + [ id: safeId( name ), barcode: barcode ], bam: bam ]
         }
     }
-    def counts = rows.findAll { r -> r.meta.barcode != 'unclassified' && r.meta.status != 'pod5_fail' }.countBy { r -> r.meta.id }
+    // Pass and failed reads counted apart: a barcode can have failed reads on
+    // two flow cells but a pass BAM on one only.
+    def counts = rows.findAll { r -> r.meta.barcode != 'unclassified' }.countBy { r -> [ r.meta.id, r.meta.status == 'pod5_fail' ] }
     return rows.collect { r ->
-        def id = r.meta.barcode == 'unclassified' || counts[ r.meta.id ] > 1 ? "${r.meta.id}_${r.meta.flowcell}" : r.meta.id
+        def id = r.meta.barcode == 'unclassified' || counts[ [ r.meta.id, r.meta.status == 'pod5_fail' ] ] > 1 ? "${r.meta.id}_${r.meta.flowcell}" : r.meta.id
         tuple( r.meta + [ id: ( r.meta.status == 'pod5_fail' ? "${id}_fail" : id ).toString() ], r.bam )
     }
 }

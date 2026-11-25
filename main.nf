@@ -10,7 +10,7 @@
 
 include { ILLUMINA_QC  } from './subworkflows/local/illumina_qc.nf'
 include { AVITI_QC     } from './subworkflows/local/aviti_qc.nf'
-include { NANOPORE_QC; nanoporeUnfinished; nanoporeLayoutCheck } from './subworkflows/local/nanopore_qc.nf'
+include { NANOPORE_QC; nanoporeUnfinished; nanoporeLayoutCheck; ontPod5Folders } from './subworkflows/local/nanopore_qc.nf'
 include { PACBIO_QC; revioUnfinishedCells } from './subworkflows/local/pacbio_qc.nf'
 include { BATCH_REPORT } from './subworkflows/local/batch_report.nf'
 include { COPY_READS   } from './modules/local/copy_reads/main.nf'
@@ -141,7 +141,7 @@ def illuminaAnalysis( run_dir, wanted ) {
         .findAll { d -> d.name.isInteger() }
         .collect { d -> d.name.toInteger() }
         .sort()
-    if ( wanted ) {
+    if ( wanted != null ) {
         def n = wanted.toString()
         if ( !n.isInteger() || !( n.toInteger() in found ) ) {
             error "--illumina_analysis ${n}: no Analysis/${n} in ${run_dir}${found ? " (it has ${found.collect { a -> "Analysis/${a}" }.join(', ')})" : ''}."
@@ -232,7 +232,21 @@ workflow {
     if ( platform == 'illumina' ) {
         def missing = [ 'RTAComplete.txt', 'CopyComplete.txt' ].findAll { m -> !file("${run_dir}/${m}").exists() }
         requireRunComplete( run_id, missing, flag( params.allow_incomplete ) )
+        if ( fastq_dir && params.illumina_analysis != null ) {
+            log.warn "--illumina_analysis ${params.illumina_analysis} is ignored with --fastq_dir: the FASTQ and BCL Convert reports come from ${fastq_dir}."
+        }
         analysis = fastq_dir ? null : illuminaAnalysis( run_dir, params.illumina_analysis )
+        // Checked here too (ILLUMINA_QC repeats it): failing inside the
+        // subworkflow would leave the output directory claimed.
+        def fastq_root = fastq_dir ?: ( analysis != null ? run_dir.resolve( "Analysis/${analysis}" ) : run_dir )
+        def r1s = ( files("${fastq_root}/**/*_R1_001.fastq.gz") + files("${fastq_root}/*_R1_001.fastq.gz") )
+            .findAll { f -> f.exists() && !f.name.startsWith('Undetermined') }
+        if ( !r1s ) {
+            error "No *_R1_001.fastq.gz found under ${fastq_root}. Has the run been demultiplexed? Point --fastq_dir at the FASTQ directory if they live elsewhere, or pick another analysis with --illumina_analysis."
+        }
+    }
+    else if ( params.illumina_analysis != null ) {
+        log.warn "--illumina_analysis is for Illumina runs; ignored on a ${platform} run."
     }
     else if ( platform == 'nanopore' ) {
         def unfinished = nanoporeUnfinished( pod5_dir ?: run_dir ).collect { acq -> "${acq}/final_summary_*.txt".toString() }
@@ -241,12 +255,23 @@ workflow {
         if ( layout.errors ) {
             error "Run ${run_id} has read folders the pipeline does not handle yet: ${layout.errors.join(', ')}. Their reads would be counted twice (EIT-GBI/nf-seqc#24). Move them out of the run folder, or point --pod5_dir at the folders to process."
         }
+        // As NANOPORE_QC checks them, but here, before the claim.
+        def folders = ontPod5Folders( [:], pod5_dir ?: run_dir, flag( params.include_failed ), params.barcode_kit )
+        if ( !folders ) {
+            error "No *.pod5 found under ${pod5_dir ?: run_dir}. Point --pod5_dir at the POD5 directory if they live elsewhere."
+        }
+        def no_kit = folders.findAll { m, _dir -> m.barcoded && !m.kit }
+        if ( no_kit ) {
+            error "${no_kit[0][0].flowcell} is barcoded but its final_summary names no barcoding kit. Pass --barcode_kit (e.g. SQK-RBK114-24)."
+        }
         layout.warnings.each { w ->
             log.warn "Acquisition ${w} uses a barcoding kit but has no barcode folders: it will not be demultiplexed and comes out as one sample (EIT-GBI/nf-seqc#24)."
         }
     }
     else if ( platform == 'pacbio' ) {
-        requireRunComplete( run_id, revioUnfinishedCells( bam_dir ?: run_dir ), flag( params.allow_incomplete ) )
+        // The run folder, not --bam_dir: metadata/ (transferdone) stays with
+        // the run wherever the BAMs were moved.
+        requireRunComplete( run_id, revioUnfinishedCells( run_dir ), flag( params.allow_incomplete ) )
     }
 
     claimOutput( workflow.outputDir, workflow.sessionId.toString(), workflow.resume, flag( params.overwrite ), by_name )
@@ -323,7 +348,13 @@ workflow {
         .toList()
         .flatMap { checked ->
             bamCheckWarnings( checked.collect { c -> c[1] }, expect_mods, 'BAM_CHECK' )
-            def rows  = checked.findAll { meta, _row -> !meta.unassigned && ( meta.barcode != 'unclassified' || flag( params.include_failed ) ) }
+            // Rows for the BAMs reported as samples only, under their sample
+            // name: not a failed-reads BAM, a barcode under
+            // --min_barcode_reads, or a restarted flow cell's second BAM
+            // (meta.report false), and not the unassigned/unclassified reads
+            // unless --include_failed.
+            def rows  = checked.findAll { meta, _row -> meta.report != false && !meta.unassigned && ( meta.barcode != 'unclassified' || flag( params.include_failed ) ) }
+                .collect { meta, row -> [ meta, row + [ id: meta.report_id ?: row.id ] ] }
             // Sorted, so the table (a MultiQC input) is the same on every run
             // and -resume does not rerun MULTIQC for nothing.
             def table = bamCheckTable( rows.collect { c -> c[1] }.sort { r -> r.id }, check_reads )

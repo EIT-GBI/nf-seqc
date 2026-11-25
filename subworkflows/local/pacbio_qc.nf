@@ -128,16 +128,19 @@ def uniqueIds( List rows, List keys ) {
 // Transfers that have not finished, as the transferdone files still missing.
 // Revio writes metadata/<movie>.transferdone once a movie is fully copied off
 // the instrument. Each movie a SMRT Cell holds (its HiFi BAM and dataset XML
-// name it) needs its own, so a cell whose metadata/ does not exist yet, or a
-// well whose second movie is still copying, counts as unfinished. Checked from
-// the entry workflow, before any task runs.
+// name it, and so do the files metadata/ already holds) needs its own, so a
+// cell whose metadata/ does not exist yet, one where only metadata/ has been
+// copied so far, or a well whose second movie is still copying, counts as
+// unfinished. Checked from the entry workflow, on the run folder (not
+// --bam_dir), before any task runs.
 def revioUnfinishedCells( root ) {
     def cells = ( files("${root}/*", type: 'dir') + [ root ] )
         .findAll { c -> c.resolve('hifi_reads').isDirectory() || c.resolve('pb_formats').isDirectory() || c.resolve('metadata').isDirectory() }
     return cells.collectMany { c ->
-        def movies = ( files("${c}/hifi_reads/*.bam") + files("${c}/pb_formats/*.consensusreadset.xml") )
+        def movies = ( files("${c}/hifi_reads/*.bam") + files("${c}/pb_formats/*.consensusreadset.xml") + files("${c}/metadata/*") )
             .findAll { f -> f.exists() }
             .collect { f -> f.name.tokenize('.')[0] }
+            .findAll { m -> m ==~ /m\d+[a-z]?_\d{6}_\d{6}_s\d+/ }
             .unique()
         movies.findAll { m -> !c.resolve("metadata/${m}.transferdone").exists() }
             .collect { m -> "${c.name}/metadata/${m}.transferdone".toString() }
