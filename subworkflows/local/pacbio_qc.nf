@@ -120,7 +120,7 @@ def uniqueIds( List rows, List keys ) {
     }
     def clashes = out.countBy { r -> r.meta.id }.findAll { _id, n -> n > 1 }.keySet()
     if ( clashes ) {
-        error "PACBIO_QC: several BAMs would be published as ${clashes.join(', ')}: ${out.findAll { r -> r.meta.id in clashes }.collect { r -> r.bam.name }.join(', ')}."
+        error "Several PacBio BAMs would be published as ${clashes.join(', ')}: ${out.findAll { r -> r.meta.id in clashes }.collect { r -> r.bam.name }.join(', ')}."
     }
     return out
 }

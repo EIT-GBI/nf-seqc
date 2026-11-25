@@ -34,9 +34,11 @@ nextflow run . -profile cluster --instrument pacbio_revio_84334 --run r84334_202
 ```
 
 The pipeline finds the year directory itself and publishes the MultiQC report,
-QC files and reads to the same path under `/mnt/instrument-data/sequencing/`,
-where scientists read them:
-`/mnt/instrument-data/sequencing/pacbio_revio_84334/2026/r84334_20260817_141703/`.
+QC files and reads to the same `<instrument>/<YYYY>/<run>` path under
+`--publish_root`, e.g.
+`/mnt/lustre/users/$USER/nf-seqc-results/pacbio_revio_84334/2026/r84334_20260817_141703/`.
+The results bucket for scientists has the same layout and will replace that
+default once it is mounted.
 
 > **For now the default is `/mnt/lustre/users/$USER/nf-seqc-results/`**, with
 > the same `<instrument>/<YYYY>/<run>` layout: the launching account's Lustre
@@ -205,7 +207,7 @@ from a partial run are misleading. Override with `--allow_incomplete`.
 | `--instrument` | — | instrument directory, `<brand>_<model>_<machine_ID>`; with `--run` |
 | `--run` | — | run folder name, looked up under `<prep_root>/<instrument>/<YYYY>/` |
 | `--prep_root` | `/mnt/instrument-prep-zone/sequencing` | where instruments write runs |
-| `--publish_root` | `/mnt/lustre/users/$USER/nf-seqc-results` (temporary; production: `/mnt/instrument-data/sequencing`) | where `--instrument`/`--run` results are published |
+| `--publish_root` | `/mnt/lustre/users/$USER/nf-seqc-results` (the launching account's Lustre space; the Prefect robot account has one too) | where `--instrument`/`--run` results are published |
 | `--input` | — | run directory, instead of `--instrument`/`--run` |
 | `--outdir` | `<publish_root>/<instrument>/<YYYY>/<run>`, or `results/<run>` with `--input` | output directory |
 | `--overwrite` | `false` | publish into a destination that already has results. Files are written over, never removed: a file the new run does not produce (a sample renamed in a corrected sample sheet, `<sample>_fail.bam` after dropping `--include_failed`, Undetermined FastQC after dropping `--include_undetermined`) stays, so clear the folder first when that matters |
