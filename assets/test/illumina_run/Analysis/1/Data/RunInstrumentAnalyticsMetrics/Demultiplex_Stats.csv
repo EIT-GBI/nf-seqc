@@ -1,0 +1,4 @@
+Lane,SampleID,Index,# Reads,# Perfect Index Reads,# One Mismatch Index Reads,# Two Mismatch Index Reads,% Reads,% Perfect Index Reads,% One Mismatch Index Reads,% Two Mismatch Index Reads
+1,0001,ELIDED,6000,5800,200,0,0.6000,0.9667,0.0333,0.0000
+1,0002,ELIDED,3000,2900,100,0,0.3000,0.9667,0.0333,0.0000
+1,Undetermined,,1000,1000,0,0,0.1000,1.0000,0.0000,0.0000

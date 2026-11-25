@@ -1,0 +1,4 @@
+Metric,Level,Value
+Cluster Density,Run,250000
+Reads,Run,1200000000
+Reads PF,Run,1100000000

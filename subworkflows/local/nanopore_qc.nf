@@ -1,0 +1,734 @@
+//
+// Subworkflow: NANOPORE_QC
+//
+// A PromethION run folder holds one acquisition directory per flow cell (and
+// per restart), each written by MinKNOW:
+//
+//   <experiment>/<sample>/<date>_<time>_<device>_<flowcell>_<run>/
+//       final_summary_*.txt      written last: flow cell, sample, kit (protocol=)
+//       sample_sheet_*.csv       barcode aliases, when the run had a sample sheet
+//       pod5_pass/barcodeNN/     POD5 MinKNOW classified to one barcode
+//       pod5_pass/mixed/         POD5 holding reads of several barcodes
+//       pod5_pass/unclassified/  no barcode found
+//       pod5_fail/ ...           failed reads (excluded unless --include_failed)
+//
+// MinKNOW's per-barcode folders are not a complete split: mixed/ holds a large
+// share of each barcode's reads (34% of barcode01's on 20260515_Plasmids_A_B).
+// So every POD5 folder is basecalled with --kit-name, which tags each read with
+// its barcode, and DORADO_DEMUX then splits all of a flow cell's reads by that
+// tag. Unbarcoded flow cells skip the demux: each folder's BAM is the sample.
+//
+// Scientists get the per-sample uBAM only (it keeps modified-base tags); no
+// FASTQ is made.
+//
+// Per-sample read statistics come from MinKNOW's sequencing_summary_*.txt (one
+// row per read, written next to final_summary), not from the BAM: they
+// describe MinKNOW's live basecalls and barcoding. Sample rows and % Reads
+// still come from the pipeline's own demux.
+//
+
+include { DORADO_BASECALLER } from '../../modules/dorado/basecaller/main.nf'
+include { DORADO_DEMUX      } from '../../modules/dorado/demux/main.nf'
+include { ONT_SUMMARY_STATS } from '../../modules/local/ont_summary_stats/main.nf'
+include { demuxSummary; readShareTable; demuxSummaryTable } from './demux_report.nf'
+
+// key=value lines of a MinKNOW final_summary_*.txt.
+def keyValues( summary ) {
+    return summary.readLines()
+        .findAll { l -> l.contains('=') }
+        .collectEntries { l -> [ ( l.substring( 0, l.indexOf('=') ) ): l.substring( l.indexOf('=') + 1 ) ] }
+}
+
+// The barcoding kit from final_summary's protocol=, e.g.
+// sequencing/sequencing_MIN114_DNA_e8_2_400K:FLO-MIN114:SQK-RBK114-24:400.
+// An expansion kit (EXP-NBD114 with SQK-LSK114) is the one carrying the
+// barcodes, so it wins over the sequencing kit.
+def protocolKit( String protocol ) {
+    def kits = ( protocol ?: '' ).tokenize(':').findAll { t -> t ==~ /^(SQK|EXP|VSK)-.+/ }
+    return kits.find { k -> k.startsWith('EXP-') } ?: kits ? kits[-1] : null
+}
+
+// Barcode aliases from the acquisition's sample_sheet_*.csv, when it has
+// barcode and alias columns (MinKNOW's sample sheet without them only names
+// the flow cell and kit).
+def sampleSheetAliases( dir ) {
+    def sheets = files("${dir}/sample_sheet_*.csv").findAll { f -> f.exists() }
+    if ( !sheets ) {
+        return [:]
+    }
+    def rows = sheets[0].splitCsv( header: true )
+    return rows.findAll { r -> r.barcode && r.alias }.collectEntries { r -> [ ( r.barcode ): r.alias ] }
+}
+
+// One record per POD5 folder to basecall: [ meta, folder ]. meta.flowcell,
+// meta.kit and meta.aliases come from the acquisition's final_summary and
+// sample sheet. A POD5 tree without final_summary (--pod5_dir pointing at bare
+// POD5) is one acquisition named after its directory, and needs --barcode_kit
+// if barcoded.
+def ontPod5Folders( meta, root, boolean include_failed, barcode_kit ) {
+    def pod5s = ( files("${root}/**/*.pod5") + files("${root}/*.pod5") )
+        .findAll { f -> f.exists() }
+        .unique()
+    def folders = pod5s.collect { f -> f.parent }.unique()
+    def records = folders.collect { dir ->
+        // pod5_pass/barcode01/x.pod5 or pod5_pass/x.pod5 (unbarcoded)
+        // or, from --pod5_dir without MinKNOW's layout, <dir>/barcode01/x.pod5:
+        // the barcode folders' parent is then the acquisition.
+        def barcoded   = dir.name ==~ /barcode\d+|mixed|unclassified/
+        def status_dir = dir.name.startsWith('pod5') ? dir : dir.parent
+        def acq        = status_dir.name.startsWith('pod5') ? status_dir.parent : barcoded ? dir.parent : dir
+        def status     = status_dir.name.startsWith('pod5') ? status_dir.name : 'pod5'
+        def summary    = files("${acq}/final_summary_*.txt").find { f -> f.exists() }
+        def kv         = summary ? keyValues( summary ) : [:]
+        def flowcell   = kv.flow_cell_id ?: acq.name
+        def run8       = ( kv.protocol_run_id ?: acq.name ).take(8)
+        [
+            meta: meta + [
+                id:       "${flowcell}_${run8}_${status}_${dir.name}".toString(),
+                flowcell: flowcell,
+                sample:   kv.sample_id ?: flowcell,
+                run8:     run8,
+                kit:      barcoded ? ( barcode_kit ?: protocolKit( kv.protocol ) ) : null,
+                aliases:  sampleSheetAliases( acq ),
+                barcoded: barcoded,
+                status:   status,
+            ],
+            dir: dir,
+        ]
+    }
+    return records
+        .findAll { r -> include_failed || r.meta.status != 'pod5_fail' }
+        .collect { r -> tuple( r.meta, r.dir ) }
+        .sort { t -> t[0].id }
+}
+
+// Acquisition directories that have POD5 but no final_summary_*.txt yet:
+// MinKNOW writes final_summary last. Checked from the entry workflow, before
+// any task runs.
+// root holds the POD5 (the run folder, or --pod5_dir); run_dir is where
+// MinKNOW writes final_summary, which stays in the run folder when the POD5
+// were moved out: an acquisition is finished with a final_summary in either,
+// matched by the acquisition folder's name.
+def nanoporeUnfinished( root, run_dir ) {
+    def status_dirs = ( files("${root}/**/pod5*", type: 'dir') + files("${root}/pod5*", type: 'dir') )
+        .findAll { d -> d.exists() && files("${d}/**/*.pod5") + files("${d}/*.pod5") }
+    def in_run = ( files("${run_dir}/**/final_summary_*.txt") + files("${run_dir}/final_summary_*.txt") )
+        .findAll { f -> f.exists() }
+        .collect { f -> f.parent.name }
+    return status_dirs
+        .collect { d -> d.parent }
+        .unique()
+        .findAll { acq -> !files("${acq}/final_summary_*.txt").find { f -> f.exists() } && !( acq.name in in_run ) }
+        .collect { acq -> acq.name }
+}
+
+// MinKNOW's read folders this pipeline handles: pod5_pass/ and pod5_fail/
+// (pass/fail split on), pod5/ (split off, or live basecalling off).
+def supportedReadFolder( String name ) {
+    return name in [ 'pod5_pass', 'pod5_fail', 'pod5' ]
+}
+
+// A kit that carries barcodes, by the barcoding chemistries in ONT's kit
+// names: native (NBD, NBA), rapid (RBK, RAB, RLB), PCR (PBK, PCB, RPB, PBC),
+// 16S and multiplex ligation (MLK), with or without a count (SQK-NBD114-96,
+// SQK-RBK004, EXP-NBD196, SQK-NBD114.24). A ligation kit (SQK-LSK114, ULK)
+// or a non-barcoding expansion (EXP-FLP, EXP-MRT) carries none. Only used for
+// a warning.
+def barcodingKit( kit ) {
+    return kit && kit ==~ /(?i).*-(NBD|NBA|RBK|RAB|RLB|PBK|PCB|RPB|PBC|16S|MLK)\d.*/
+}
+
+// Read-folder layouts the pipeline does not handle yet (EIT-GBI/nf-seqc#24),
+// as [ errors: [], warnings: [] ]. Checked from the entry workflow, before the
+// output directory is claimed.
+//   - a read folder other than pod5_pass/, pod5_fail/ or pod5/ (pod5_skip/,
+//     pod5_recovered/, after manual handling of the instrument): its reads
+//     would become an extra sample counting the whole flow cell twice.
+//   - a barcoding kit without barcode folders: the flow cell would not be
+//     demultiplexed, and comes out as one sample.
+def nanoporeLayoutCheck( root, barcode_kit ) {
+    def status_dirs = ( files("${root}/**/pod5*", type: 'dir') + files("${root}/pod5*", type: 'dir') )
+        .findAll { d -> d.exists() && d.name ==~ /pod5.*/ && ( files("${d}/**/*.pod5") + files("${d}/*.pod5") ) }
+        .unique()
+    def errors = status_dirs.findAll { d -> !supportedReadFolder( d.name ) }
+        .collect { d -> "${d.parent.name}/${d.name}".toString() }
+    def warnings = status_dirs.findAll { d -> supportedReadFolder( d.name ) }
+        .groupBy { d -> d.parent }
+        .findAll { acq, ds ->
+            def kv  = acquisitionSummary( acq )
+            def kit = barcode_kit ?: protocolKit( kv.protocol )
+            barcodingKit( kit ) && !ds.any { d -> files("${d}/*", type: 'dir').any { b -> b.name ==~ /barcode\d+|mixed|unclassified/ } }
+        }
+        .collect { acq, _ds -> "${acq.name} (kit ${barcode_kit ?: protocolKit( acquisitionSummary( acq ).protocol )})".toString() }
+    return [ errors: errors.unique(), warnings: warnings ]
+}
+
+// barcode01 from dorado demux's <kit>_barcode01.bam, or unclassified.
+def demuxBarcode( bam ) {
+    def m = bam.name =~ /(barcode\d+|unclassified)\.bam$/
+    return m.find() ? m.group(1) : bam.name - ~/\.bam$/
+}
+
+// Sample ids end up in file names (the per-sample BAM).
+def safeId( String name ) {
+    return name.replaceAll(/[^A-Za-z0-9._-]+/, '_')
+}
+
+// Per-sample [ meta, bam ] from every flow cell's demux output, named by the
+// sample sheet alias, else the barcode. A name used on two flow cells (barcode01
+// on each) is suffixed with the flow cell id. Failed reads (--include_failed)
+// are demultiplexed apart and named <sample>_fail.
+def ontSamples( List demuxed ) {
+    def rows = demuxed.collectMany { meta, bams ->
+        ( bams instanceof List ? bams : [ bams ] ).collect { bam ->
+            def barcode = demuxBarcode( bam )
+            def name    = meta.aliases[ barcode ] ?: barcode
+            [ meta: meta + [ id: safeId( name ), barcode: barcode ], bam: bam ]
+        }
+    }
+    // Pass and failed reads counted apart: a barcode can have failed reads on
+    // two flow cells but a pass BAM on one only.
+    def counts = rows.findAll { r -> r.meta.barcode != 'unclassified' }.countBy { r -> [ r.meta.id, r.meta.status == 'pod5_fail' ] }
+    return rows.collect { r ->
+        def id = r.meta.barcode == 'unclassified' || counts[ [ r.meta.id, r.meta.status == 'pod5_fail' ] ] > 1 ? "${r.meta.id}_${r.meta.flowcell}" : r.meta.id
+        tuple( r.meta + [ id: ( r.meta.status == 'pod5_fail' ? "${id}_fail" : id ).toString() ], r.bam )
+    }
+}
+
+// Per-sample [ meta, bam ] for unbarcoded flow cells: each folder's BAM,
+// named after MinKNOW's sample id and the flow cell. A restarted flow cell
+// has one BAM per acquisition, suffixed with its protocol run; failed reads
+// (--include_failed) are <sample>_fail. Only one of a flow cell's BAMs
+// (meta.report, the first pass acquisition) gets the sample row, under the
+// flow cell's name (meta.report_id): MinKNOW's statistics cover the whole
+// flow cell, so a row per acquisition would count it twice.
+def ontPlainSamples( List called ) {
+    return called.groupBy { meta, _bam -> [ meta.flowcell, meta.status ] }
+        .collectMany { _key, rows ->
+            rows.sort { r -> r[0].id }.withIndex().collect { r, i ->
+                def meta = r[0]
+                def base = safeId( "${meta.sample}_${meta.flowcell}".toString() ) + ( meta.status == 'pod5_fail' ? '_fail' : '' )
+                def id   = rows.size() > 1 ? safeId( "${base}_${meta.run8}".toString() ) : base
+                tuple( meta + [ id: id, report_id: base, barcode: null, report: meta.status != 'pod5_fail' && i == 0 ], r[1] )
+            }
+        }
+}
+
+// The delivered [ meta, bam ], failing when two would be published under one
+// name (one file would silently overwrite the other).
+def requireUniqueIds( List samples ) {
+    def clashes = samples.countBy { meta, _bam -> meta.id }.findAll { _id, n -> n > 1 }.keySet()
+    if ( clashes ) {
+        error "NANOPORE_QC: several BAMs would be published as ${clashes.collect { c -> "${c}.bam" }.join(', ')}. See EIT-GBI/nf-seqc#24 for layouts not handled yet."
+    }
+    return samples
+}
+
+// Reads per sample and unclassified, from each flow cell's
+// barcoding_summary.txt (one row per read, streamed: a PromethION flow cell
+// has millions), as [ meta, reads: [ id: n ], unclassified: n ]. reads is
+// empty when there is no summary to count from (no barcoded flow cell).
+def barcodeCounts( List all_samples, List all_summaries ) {
+    // Pass reads only, as General Statistics: failed reads (--include_failed)
+    // are demultiplexed apart and would otherwise add to the same barcodes.
+    def samples    = all_samples.findAll { meta, _bam -> meta.status != 'pod5_fail' }
+    def summaries  = all_summaries.findAll { meta, _summary -> meta.status != 'pod5_fail' }
+    def ids        = samples.collectEntries { meta, _bam -> [ ( "${meta.flowcell}/${meta.barcode}".toString() ): meta.id ] }
+    def reads      = [:]
+    def unassigned = 0L
+    summaries.each { meta, summary ->
+        def column = -1
+        summary.eachLine { line, n ->
+            def fields = line.split('\t')
+            if ( n == 1 ) {
+                column = fields.findIndexOf { f -> f == 'barcode' }
+                return
+            }
+            if ( column < 0 || column >= fields.size() ) {
+                return
+            }
+            def m       = fields[column] =~ /(barcode\d+|unclassified)$/
+            def barcode = m.find() ? m.group(1) : fields[column]
+            if ( barcode == 'unclassified' ) {
+                unassigned += 1
+            }
+            else {
+                def id = ids[ "${meta.flowcell}/${barcode}".toString() ]
+                if ( id ) {
+                    reads[id] = ( reads[id] ?: 0L ) + 1
+                }
+            }
+        }
+    }
+    return [ meta: samples ? samples[0][0] : [:], reads: reads, unclassified: unassigned ]
+}
+
+// A barcode with fewer than `min_reads` reads is not a sample: on a real run
+// a dozen unused barcodes each pick up a read or two from misclassification.
+// Their reads count as unclassified in the Demultiplexing table. null when no
+// barcode has enough reads.
+def demuxAboveCutoff( Map counts, long min_reads ) {
+    def low  = counts.reads.findAll { _id, n -> n < min_reads }
+    def kept = counts.reads.findAll { _id, n -> n >= min_reads }
+    if ( low ) {
+        log.info "NANOPORE_QC: ${low.size()} barcode(s) below --min_barcode_reads ${min_reads}, counted as unclassified, not reported as samples: ${low.collect { id, n -> "${id} (${n})" }.join(', ')}"
+    }
+    return kept ? demuxSummary( kept, counts.unclassified + ( low.values().sum() ?: 0L ), [] ) : null
+}
+
+// key=value lines of an acquisition directory's final_summary, or [:].
+def acquisitionSummary( dir ) {
+    def final_summary = files("${dir}/final_summary_*.txt").find { s -> s.exists() }
+    return final_summary ? keyValues( final_summary ) : [:]
+}
+
+// Seconds an acquisition started after `first`, from final_summary's
+// started= (RFC 3339, e.g. 2026-05-15T14:10:49.269675+00:00), or 0 when
+// either is missing or not in that form (that acquisition then starts at 0 h
+// in the time plots). Checked first, not parsed blind: a parse error inside
+// the channel operator that calls this would kill the run with a misleading
+// message.
+def secondsAfter( String started, String first ) {
+    def rfc3339 = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})/
+    if ( !( started ==~ rfc3339 ) || !( first ==~ rfc3339 ) ) {
+        return 0
+    }
+    return java.time.Duration.between(
+        java.time.OffsetDateTime.parse( first ).toInstant(),
+        java.time.OffsetDateTime.parse( started ).toInstant()
+    ).seconds
+}
+
+// Every sequencing_summary_*.txt under the run folder, grouped by flow cell
+// (a restarted acquisition writes a second one), with the flow cell's
+// report_*.json, as [ flowcell, [ summaries ], [ reports ], [ offsets ] ].
+// offsets[i] is how many seconds summaries[i]'s acquisition started after the
+// flow cell's first one: each summary counts read times from its own start,
+// so this puts a restart after the first run on one time axis. The flow cell
+// id is final_summary's, as ontPod5Folders() names it.
+def ontSequencingSummaries( root ) {
+    def summaries = ( files("${root}/**/sequencing_summary_*.txt") + files("${root}/sequencing_summary_*.txt") )
+        .findAll { f -> f.exists() }
+        .unique()
+    return summaries.groupBy { f -> acquisitionSummary( f.parent ).flow_cell_id ?: f.parent.name }
+        .collect { flowcell, fs ->
+            def sorted  = fs.sort { f -> acquisitionSummary( f.parent ).started ?: '' }
+            def starts  = sorted.collect { f -> acquisitionSummary( f.parent ).started }
+            // MinKNOW writes started= in UTC, so the earliest sorts first as text.
+            def first   = starts.findAll { v -> v }.min()
+            def reports = sorted.collect { f -> f.parent }.unique()
+                .collectMany { d -> files("${d}/report_*.json").findAll { r -> r.exists() } }
+            [ flowcell, sorted, reports.sort(), starts.collect { v -> secondsAfter( v, first ) } ]
+        }
+}
+
+// The pipeline's sample ids per flow cell and barcode, from the samples it
+// delivers and reports ([ meta, bam ] after the --min_barcode_reads cut-off),
+// as [ flowcell: [ barcode: id ] ]. An unbarcoded flow cell's sample is under
+// 'all'. ONT_SUMMARY_STATS names its plot series with this, so they match the
+// General Statistics rows, and plots no barcode that is not a sample.
+def ontSampleIds( List samples ) {
+    def ids = [:]
+    samples.each { meta, _bam ->
+        def fc = ids.get( meta.flowcell, [:] )
+        fc[ meta.barcode ?: 'all' ] = meta.id
+    }
+    return ids
+}
+
+// MultiQC General Statistics columns, one row per sample, from each flow
+// cell's ONT_SUMMARY_STATS table: what NanoPlot used to compute by reading
+// every BAM. A barcoded sample takes its barcode's row, an unbarcoded flow
+// cell's sample the flow cell's `all` row. null when no sample has a row.
+def ontSampleTable( List samples, List stats ) {
+    def by_flowcell = stats.collectEntries { meta, tsv ->
+        [ ( meta.flowcell ): tsv.splitCsv( header: true, sep: '\t' ).collectEntries { r -> [ ( r.barcode ): r ] } ]
+    }
+    // Sorted by sample: samples arrive in task-completion order, and an
+    // unchanged file lets -resume skip MULTIQC.
+    def rows = samples.sort( false ) { s -> s[0].id }.collect { meta, _bam ->
+        def r = by_flowcell[ meta.flowcell ]?.get( meta.barcode ?: 'all' )
+        if ( !r ) {
+            return null
+        }
+        def reads = r.pass_reads as long
+        def all   = reads + ( r.fail_reads as long )
+        [ meta.id, reads, ( r.pass_bases as long ) / 1e6, r.mean_length, r.n50, r.median_q, all ? 100.0 * reads / all : '' ].join('\t')
+    }.findAll { r -> r != null }
+    if ( !rows ) {
+        return null
+    }
+    def header = [
+        "# id: 'nanopore_sample_metrics'",
+        "# plot_type: 'generalstats'",
+        "# headers:",
+        "#     reads:",
+        "#         title: 'Reads'",
+        "#         namespace: 'MinKNOW'",
+        "#         description: 'Pass reads in MinKNOW''s sequencing_summary (its live basecalls and barcoding; the pipeline''s own demux gives % Reads)'",
+        "#         format: '{:,.0f}'",
+        "#     yield:",
+        "#         title: 'Yield'",
+        "#         namespace: 'MinKNOW'",
+        "#         description: 'Pass bases'",
+        "#         suffix: ' Mb'",
+        "#         format: '{:,.1f}'",
+        "#     mean_length:",
+        "#         title: 'Mean length'",
+        "#         namespace: 'MinKNOW'",
+        "#         description: 'Mean pass read length'",
+        "#         suffix: ' bp'",
+        "#         format: '{:,.0f}'",
+        "#     n50:",
+        "#         title: 'Read N50'",
+        "#         namespace: 'MinKNOW'",
+        "#         description: 'Pass read length N50'",
+        "#         suffix: ' bp'",
+        "#         format: '{:,.0f}'",
+        "#     median_q:",
+        "#         title: 'Median Q'",
+        "#         namespace: 'MinKNOW'",
+        "#         description: 'Median of the pass reads'' mean Q-score'",
+        "#         format: '{:,.1f}'",
+        "#     pct_pass:",
+        "#         title: '% Pass'",
+        "#         namespace: 'MinKNOW'",
+        "#         description: 'Share of the barcode''s reads that passed MinKNOW''s Q-score filter'",
+        "#         suffix: '%'",
+        "#         min: 0",
+        "#         max: 100",
+        "#         format: '{:,.1f}'",
+        "#         hidden: true",
+        "Sample\treads\tyield\tmean_length\tn50\tmedian_q\tpct_pass",
+    ]
+    return ( header + rows ).join('\n') + '\n'
+}
+
+// A JSON number MinKNOW wrote as a string ("328774"), or null.
+def asLong( value ) {
+    return value != null && value.toString().isNumber() ? value.toString() as long : null
+}
+
+// Hours between two MinKNOW timestamps (RFC 3339, nanoseconds), or null.
+def hoursBetween( String start, String end ) {
+    if ( !start || !end ) {
+        return null
+    }
+    def seconds = java.time.Duration.between( java.time.Instant.parse( start ), java.time.Instant.parse( end ) ).seconds
+    return seconds / 3600.0
+}
+
+// MinKNOW's STOPPED_PROTOCOL_ENDED as "protocol ended".
+def stopReason( String reason ) {
+    return reason ? ( reason - ~/^STOPPED_/ ).toLowerCase().replace('_', ' ') : ''
+}
+
+// One flow cell acquisition's run metrics, measured live by MinKNOW, from its
+// report_*.json. The report holds calibration acquisitions first; the metrics
+// come from the last SEQUENCING one. Returns null when there is none (a run
+// stopped during the flow cell check). Every field is n/a-able on its own.
+def ontReportMetrics( report ) {
+    def d   = new groovy.json.JsonSlurper().parse( report.toFile() )
+    def acq = ( d.acquisitions ?: [] ).findAll { a -> a.acquisition_run_info?.config_summary?.purpose == 'SEQUENCING' }
+    if ( !acq ) {
+        return null
+    }
+    def a        = acq[-1]
+    def info     = a.acquisition_run_info ?: [:]
+    def yields   = info.yield_summary ?: [:]
+    def run      = d.protocol_run_info ?: [:]
+    def flowcell = run.flow_cell?.flow_cell_id ?: run.user_info?.user_specified_flow_cell_id ?: report.parent.name
+    // N50 of the bases MinKNOW basecalled live, else of its estimate from the
+    // raw signal. Per-sample N50 is in General Statistics, from sequencing_summary.
+    def lengths  = ( a.read_length_histogram ?: [] ).collectEntries { h -> [ ( h.plot?.read_length_type ?: h.read_length_type ?: 'raw' ): h.plot?.histogram_data?.getAt(0)?.n50 ] }
+    // Pore scans run every 1.5 h; the first is at the start of sequencing.
+    def scans    = ( d.user_messages ?: [] ).findAll { m -> m.identifier == 'mux_scan_result' && m.extra_data }
+    def occ      = ( a.duty_time?.getAt(0)?.pore_occupancy ?: [] ).findAll { v -> v != null }
+    def passed   = asLong( yields.basecalled_pass_bases )
+    def estimate = asLong( yields.estimated_selected_bases )
+    return [
+        flowcell:    flowcell,
+        protocol:    ( run.run_id ?: '' ).take(8),
+        sample:      run.user_info?.sample_id ?: '',
+        position:    run.device?.device_id ?: '',
+        flowcell_type: run.flow_cell?.product_code ?: '',
+        kit:         run.user_info?.kit_info?.sequencing_kit ?: '',
+        hours:       hoursBetween( info.data_read_start_time, info.data_read_end_time ) ?: '',
+        stop:        stopReason( info.stop_reason ),
+        pores_start: scans ? ( asLong( scans[0].extra_data.total_pores ) ?: '' ) : '',
+        pores_ready: scans ? ( asLong( scans[0].extra_data.num_pores ) ?: '' ) : '',
+        pores_end:   scans ? ( asLong( scans[-1].extra_data.total_pores ) ?: '' ) : '',
+        occupancy:   occ ? 100.0 * occ.sum() / occ.size() : '',
+        reads:       asLong( yields.read_count ) ?: '',
+        pass_bases:  passed != null ? passed / 1e9 : '',
+        est_bases:   estimate != null ? estimate / 1e9 : '',
+        n50:         lengths.BasecalledBases ?: lengths.EstimatedBases ?: '',
+        model:       a.basecaller_config?.model_names?.simplex_model ?: '',
+        minknow:     run.software_versions?.minknow?.full ?: '',
+    ]
+}
+
+// One row per flow cell acquisition, as MultiQC custom content: the run-level
+// slot the InterOp table fills for Illumina. A flow cell restarted into a
+// second acquisition gets a row per acquisition, suffixed with the protocol
+// run id. No flags yet: what counts as low occupancy or pore count waits for
+// the lab, as for PacBio P1.
+def ontMetricsTable( root ) {
+    def reports = ( files("${root}/**/report_*.json") + files("${root}/report_*.json") )
+        .findAll { f -> f.exists() }
+        .unique()
+        .sort()
+    def rows = reports.collect { r -> ontReportMetrics( r ) }.findAll { m -> m }
+    if ( !rows ) {
+        return null
+    }
+    def counts = rows.countBy { m -> m.flowcell }
+    def header = [
+        "# id: 'nanopore_run_metrics'",
+        "# section_name: 'Nanopore Run Metrics'",
+        "# description: 'One row per flow cell, from MinKNOW''s report_*.json: what MinKNOW measured live during sequencing. Pores are from the pore scans MinKNOW runs every 1.5 h (first and last scan); occupancy is the share of available pores sequencing, averaged over the run. Yield and N50 are MinKNOW''s own live basecalls; per-sample read statistics (General Statistics) are from MinKNOW''s sequencing_summary.'",
+        "# plot_type: 'table'",
+        "# pconfig:",
+        "#     id: 'nanopore_run_metrics_table'",
+        "#     namespace: 'Nanopore'",
+        "#     col1_header: 'Flow cell'",
+        "# headers:",
+        "#     sample:",
+        "#         title: 'Pool'",
+        "#         description: 'MinKNOW sample id: MinKNOW takes one per run, so it names the pool; samples are the sample sheet aliases'",
+        "#         scale: false",
+        "#     position:",
+        "#         title: 'Position'",
+        "#         scale: false",
+        "#     flowcell_type:",
+        "#         title: 'Flow cell type'",
+        "#         scale: false",
+        "#         hidden: true",
+        "#     kit:",
+        "#         title: 'Kit'",
+        "#         scale: false",
+        "#     hours:",
+        "#         title: 'Run time'",
+        "#         suffix: ' h'",
+        "#         format: '{:,.1f}'",
+        "#         scale: false",
+        "#     stop:",
+        "#         title: 'Stopped'",
+        "#         description: 'Why MinKNOW stopped acquiring'",
+        "#         scale: false",
+        "#     pores_start:",
+        "#         title: 'Pores, start'",
+        "#         description: 'Pores found by the first pore scan'",
+        "#         format: '{:,.0f}'",
+        "#     pores_ready:",
+        "#         title: 'Ready, start'",
+        "#         description: 'Pores available for immediate sequencing at the first pore scan'",
+        "#         format: '{:,.0f}'",
+        "#         hidden: true",
+        "#     pores_end:",
+        "#         title: 'Pores, end'",
+        "#         description: 'Pores found by the last pore scan'",
+        "#         format: '{:,.0f}'",
+        "#     occupancy:",
+        "#         title: 'Pore occupancy'",
+        "#         description: 'Mean share of available pores that were sequencing'",
+        "#         suffix: '%'",
+        "#         min: 0",
+        "#         max: 100",
+        "#         format: '{:,.1f}'",
+        "#     reads:",
+        "#         title: 'Reads'",
+        "#         description: 'Reads MinKNOW generated'",
+        "#         format: '{:,.0f}'",
+        "#     pass_bases:",
+        "#         title: 'Pass yield'",
+        "#         description: 'Bases in reads passing MinKNOW''s live basecalling'",
+        "#         suffix: ' Gb'",
+        "#         format: '{:,.2f}'",
+        "#     est_bases:",
+        "#         title: 'Estimated yield'",
+        "#         description: 'Bases estimated from the raw signal'",
+        "#         suffix: ' Gb'",
+        "#         format: '{:,.2f}'",
+        "#         hidden: true",
+        "#     n50:",
+        "#         title: 'Read N50'",
+        "#         description: 'Read length N50 of MinKNOW''s live basecalls'",
+        "#         suffix: ' bp'",
+        "#         format: '{:,.0f}'",
+        "#     model:",
+        "#         title: 'Live model'",
+        "#         description: 'Model MinKNOW basecalled with live; the pipeline re-basecalls with --basecall.model'",
+        "#         scale: false",
+        "#         hidden: true",
+        "#     minknow:",
+        "#         title: 'MinKNOW'",
+        "#         scale: false",
+        "#         hidden: true",
+        "Flow cell\tsample\tposition\tflowcell_type\tkit\thours\tstop\tpores_start\tpores_ready\tpores_end\toccupancy\treads\tpass_bases\test_bases\tn50\tmodel\tminknow",
+    ]
+    def lines = rows.collect { m ->
+        def id = counts[ m.flowcell ] > 1 ? "${m.flowcell}_${m.protocol}" : m.flowcell
+        ( [ id ] + m.subMap( [ 'sample', 'position', 'flowcell_type', 'kit', 'hours', 'stop', 'pores_start', 'pores_ready', 'pores_end', 'occupancy', 'reads', 'pass_bases', 'est_bases', 'n50', 'model', 'minknow' ] ).values() ).join('\t')
+    }
+    return ( header + lines ).join('\n') + '\n'
+}
+
+workflow NANOPORE_QC {
+
+    take:
+    ch_run           // channel: [ val(meta), path(run_dir) ]
+    pod5_dir         // file or null: --pod5_dir, where the POD5 live if not in the run dir
+    include_failed   // boolean: --include_failed (pod5_fail, and the unclassified reads)
+    barcode_kit      // string or null: --barcode_kit, overrides the kit in final_summary
+    model            // string: --basecall.model
+    max_undetermined // number: --max_undetermined, % of reads unclassified
+    min_reads        // number: --min_barcode_reads, fewest reads for a barcode to be a sample
+
+    main:
+    ch_versions = channel.empty()
+
+    ch_pod5 = ch_run.flatMap { meta, run_dir ->
+        def folders = ontPod5Folders( meta, pod5_dir ?: run_dir, include_failed, barcode_kit )
+        if ( !folders ) {
+            error "NANOPORE_QC: no *.pod5 found under ${pod5_dir ?: run_dir}. Point --pod5_dir at the POD5 directory if they live elsewhere."
+        }
+        def no_kit = folders.findAll { meta_, _dir -> meta_.barcoded && !meta_.kit }
+        if ( no_kit ) {
+            error "NANOPORE_QC: ${no_kit[0][0].flowcell} is barcoded but its final_summary names no barcoding kit. Pass --barcode_kit (e.g. SQK-RBK114-24)."
+        }
+        folders
+    }
+
+    DORADO_BASECALLER( ch_pod5, model )
+
+    ch_called = DORADO_BASECALLER.out.ubam.branch { meta, _bam ->
+        barcoded: meta.barcoded
+        plain:    true
+    }
+
+    // Every barcoded folder of a flow cell (barcodeNN, mixed, unclassified) is
+    // demultiplexed together, so each barcode ends up in one file; failed reads
+    // (--include_failed) apart, so they never end up in a sample's BAM. The
+    // kit and aliases come from the first acquisition by id, not whichever
+    // groupTuple lists first, so a restarted flow cell is named the same on
+    // every run.
+    ch_to_demux = ch_called.barcoded
+        .map { meta, bam -> tuple( [ meta.flowcell, meta.status == 'pod5_fail' ], meta, bam ) }
+        .groupTuple()
+        .map { key, metas, bams ->
+            def first = metas.sort( false ) { m -> m.id }[0]
+            def id    = key[1] ? "${key[0]}_fail" : key[0]
+            // Sorted: groupTuple lists them in the order the basecaller tasks
+            // finished, and the order is part of the task hash, so -resume
+            // would otherwise demultiplex every flow cell again.
+            tuple( first.subMap( [ 'run', 'platform', 'flowcell', 'sample', 'aliases', 'status' ] ) + [ id: id.toString() ], bams.sort( false ) { b -> b.name } )
+        }
+
+    DORADO_DEMUX( ch_to_demux )
+
+    // toList: names are checked for clashes across flow cells.
+    ch_demuxed = DORADO_DEMUX.out.ubam
+        .toList()
+        .flatMap { demuxed -> ontSamples( demuxed ) }
+
+    // An unbarcoded folder's BAM is its sample, named after MinKNOW's sample id.
+    ch_plain = ch_called.plain
+        .toList()
+        .flatMap { called -> ontPlainSamples( called ) }
+
+    ch_all = ch_demuxed.mix( ch_plain )
+
+    // Each list wrapped in a one-element tuple: combine would otherwise spread
+    // a list's elements into the tuple.
+    ch_counts = ch_all.toList().map { s -> [ s ] }
+        .combine( DORADO_DEMUX.out.summary.toList().map { s -> [ s ] } )
+        .map { samples, summaries -> barcodeCounts( samples, summaries ) }
+
+    // Every BAM is delivered (ch_delivered); what is reported as a sample
+    // (ch_bam) is narrower:
+    //   - a barcode is a sample only with --min_barcode_reads reads (every
+    //     barcode is when there are no counts to judge by). A smaller one's
+    //     reads count as unclassified, and its BAM is delivered as
+    //     unclassified_<flowcell>_<barcode>.
+    //   - the unclassified BAM is a sample only with --include_failed.
+    //   - failed reads (<sample>_fail) are never a sample row.
+    //   - an unbarcoded flow cell has one sample row (ontPlainSamples()).
+    ch_delivered = ch_all
+        .combine( ch_counts )
+        .map { meta, bam, counts ->
+            def fail = meta.status == 'pod5_fail'
+            def low  = meta.barcode && meta.barcode != 'unclassified' && !fail && counts.reads && ( counts.reads[ meta.id ] ?: 0L ) < min_reads
+            def report = !fail && !low && ( meta.barcode != 'unclassified' || include_failed ) && meta.report != false
+            def id = low ? safeId( "unclassified_${meta.flowcell}_${meta.barcode}".toString() ) : meta.id
+            tuple( meta + [ id: id, report: report ], bam )
+        }
+        .toList()
+        .flatMap { samples -> requireUniqueIds( samples ) }
+    ch_bam = ch_delivered
+        .filter { meta, _bam -> meta.report }
+        .map { meta, bam -> tuple( meta + [ id: meta.report_id ?: meta.id ], bam ) }
+
+    // From the run folder, not --pod5_dir: MinKNOW writes its reports next to
+    // final_summary, whichever disk the POD5 were moved to.
+    // Each flow cell's plot series are named after the samples the pipeline
+    // reports (ch_bam), so they wait for the demux.
+    ch_sample_ids = ch_bam.toList().map { samples -> ontSampleIds( samples ) }
+    ch_summaries = ch_run
+        .flatMap { meta, run_dir ->
+            def flowcells = ontSequencingSummaries( run_dir )
+            flowcells.collect { flowcell, fs, reports, offsets ->
+                def fc_meta = [ id: flowcell, flowcell: flowcell, offsets: offsets, prefix_rows: flowcells.size() > 1 ]
+                tuple( meta.subMap( [ 'run', 'platform' ] ) + fc_meta, fs, reports )
+            }
+        }
+        .combine( ch_sample_ids )
+        .map { meta, fs, reports, ids -> tuple( meta + [ samples: ids[ meta.flowcell ] ?: [:] ], fs, reports ) }
+    ONT_SUMMARY_STATS( ch_summaries )
+
+    ch_sample_metrics = ch_bam.toList().map { s -> [ s ] }
+        .combine( ONT_SUMMARY_STATS.out.stats.toList().map { s -> [ s ] } )
+        .flatMap { samples, stats ->
+            def table = ontSampleTable( samples, stats )
+            table ? [ table ] : []
+        }
+        .collectFile( name: 'nanopore_sample_metrics_mqc.tsv' )
+
+    ch_demux = ch_counts.flatMap { counts ->
+        def demux = demuxAboveCutoff( counts, min_reads as long )
+        demux ? [ tuple( counts.meta, demux ) ] : []
+    }
+    ch_read_share = ch_demux
+        .map { _meta, demux -> readShareTable( demux, 'Unclassified' ) }
+        .collectFile( name: 'demux_read_share_mqc.tsv' )
+    ch_demux_summary = ch_demux
+        .map { meta, demux -> demuxSummaryTable( meta.run, demux, max_undetermined, 'dorado demux barcoding_summary.txt', 'Unclassified', 'NANOPORE_QC' ) }
+        .collectFile( name: 'demux_summary_mqc.tsv' )
+
+    ch_run_metrics = ch_run
+        .flatMap { _meta, run_dir ->
+            def table = ontMetricsTable( run_dir )
+            table ? [ table ] : []
+        }
+        .collectFile( name: 'nanopore_run_metrics_mqc.tsv' )
+
+    ch_qc = channel.empty()
+        .mix( ch_sample_metrics )
+        .mix( ch_run_metrics )
+        .mix( ONT_SUMMARY_STATS.out.mqc )
+        .mix( ch_read_share )
+        .mix( ch_demux_summary )
+
+    ch_versions = ch_versions
+        .mix( DORADO_BASECALLER.out.versions_dorado )
+        .mix( DORADO_DEMUX.out.versions_dorado )
+        .mix( ONT_SUMMARY_STATS.out.versions_python )
+
+    emit:
+    // Per flow cell: the barcode dorado gave each read, with its score. Lets
+    // anyone re-check the demultiplexing. meta.id is the flow cell.
+    barcoding = DORADO_DEMUX.out.summary
+    bam      = ch_delivered             // per-sample uBAM (+ unclassified), carries modified-base tags
+    qc       = ch_qc
+    versions = ch_versions
+}

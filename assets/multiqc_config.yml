@@ -1,0 +1,204 @@
+# Default MultiQC config for nf-seqc, always applied. A --multiqc_config file is
+# applied after it, so it can override anything here.
+#
+# Report order, as asked for by the lab (2026-10): unassigned barcodes, then
+# the run metrics, then the FastQC plots people check first.
+#   Illumina: General Statistics, Undetermined barcodes, Run Metrics,
+#             %Occupied vs %PF plot, FastQC, Demultiplexing, BCL Convert.
+#   AVITI:    General Statistics, Unassigned barcodes, bases2fastq,
+#             FastQC, Demultiplexing.
+#   Nanopore / PacBio: General Statistics, Unassigned barcodes, Run Metrics,
+#             the flow cell / SMRT Cell group, the reads group,
+#             Demultiplexing. Per-sample read statistics are General
+#             Statistics columns; everything is from the instruments' own
+#             reports (MinKNOW, pbreports), never from the reads.
+# FastQC opens with Sequence Quality Histograms, Per Base Sequence Content and
+# Adapter Content. The barcodes and Demultiplexing tables and the % Reads /
+# Loading columns come from subworkflows/local/demux_report.nf, for both
+# platforms.
+
+# General Statistics stays at the top (MultiQC cannot move it). It holds
+# FastQC's columns, one row per FASTQ; merge each sample's R1 and R2 into one
+# row, so an AVITI run shows one row per sample (~50) rather than per file.
+table_sample_merge:
+  "R1": "_R1"
+  "R2": "_R2"
+
+# Read counts as exact numbers rather than millions (MultiQC's default, which
+# showed small samples as "0.0M"; lab feedback 2026-11-16). Applies to every
+# module's read-count columns; FastQC's Seqs column is given whole numbers.
+# Modules put read_count_desc in brackets in their column tooltips, e.g.
+# "Total sequences (number of reads)", so it cannot be empty.
+read_count_multiplier: 1
+read_count_prefix: ""
+read_count_desc: "number of reads"
+custom_table_header_config:
+  general_stats_table:
+    total_sequences:
+      format: "{:,.0f}"
+
+# BCL Convert names FASTQ <sample>_S<n>[_L<lane>]_R1_001.fastq.gz, so FastQC
+# rows come out as "<sample>_S1_L001" while the read-share column (from
+# Demultiplex_Stats.csv) is keyed on "<sample>". Strip the suffix so the two
+# land on one row. Only for FastQC and BCL Convert, and only right before
+# _R1_001/_R2_001, BCL Convert's read tag: a sample whose own name ends in
+# _S<n> (AVITI's Mouse_S1_R1.fastq.gz, a long-read alias) keeps it. No `|$`
+# alternative: MultiQC also cleans the merged R1/R2 group name, where `$`
+# turned Mouse_S1 and Mouse_S2 into one row (checked with MultiQC 1.35).
+extra_fn_clean_exts:
+  - type: regex
+    pattern: '_S\d+(_L\d{3})?(?=_R[12]_001)'
+    module:
+      - fastqc
+      - bclconvert
+
+# Don't use top_modules for ordering: in MultiQC 1.35 listing bases2fastq there
+# runs the module twice. report_section_order below does the ordering.
+
+# bases2fastq's per-sample plots repeat what FastQC already shows (FastQC runs
+# on every FASTQ anyway). Drop them; its sample table (Q30/Q40, yield, mismatch)
+# and the run-level sections have no FastQC equivalent and stay.
+remove_sections:
+  - base_content       # = fastqc_per_base_sequence_content
+  - n_content          # = fastqc_per_base_n_content
+  - adapter_content    # = fastqc_adapter_content
+  - gc_histogram       # = fastqc_per_sequence_gc_content
+  # Keyed on the index pair alone, so it loses a sample, and adds its
+  # polonies to another's, when two lanes reuse the same indexes. Replaced by
+  # bases2fastq_index_assignment (indexAssignmentTable() in aviti_qc.nf).
+  - index_assignment_metrics
+
+# The occupancy plot is a *_mqc.png, whose section id and title would
+# otherwise come from its file name and so change with every run
+# ("261006 VH02427 108 AAJJW55M5 occupied vs pf"). Give it a fixed id, so it
+# can be ordered, and a readable title.
+custom_data:
+  illumina_occupied_vs_pf:
+    section_name: "Illumina % Occupied vs % Pass Filter"
+    description: "Per-tile %Occupied against %PF from InterOp. Underloaded: median %Occupied below 90%. Overloaded: %Occupied above that but median %PF below 65%. Thresholds are shared with the Concerns column of the Run Metrics table."
+sp:
+  illumina_occupied_vs_pf:
+    fn: "*_occupied_vs_pf_mqc.png"
+
+# Modules sort descending by `order` (defaults are small multiples of 10), so
+# these explicit values place them ahead of everything else, in this order.
+# Run Metrics + %Occupied plot + BCL Convert (Illumina) and bases2fastq (AVITI)
+# never appear together; bases2fastq takes the Run Metrics slot, as do the
+# PacBio and Nanopore Run Metrics tables.
+#
+# MultiQC cannot move a section out of its module, which is why the barcodes
+# table is our own (demux_unknown_barcodes) rather than BCL Convert's
+# undetermine_by_lane or bases2fastq's index_unassignment_metrics, both of
+# which stay in their modules further down.
+#
+# Sections within a module sort ascending; each one's default is its position
+# x 10. bases2fastq (MultiQC 1.35) emits, in order: run_qc_metrics_table,
+# run_manifest_metrics_table, index_assignment_metrics,
+# index_unassignment_metrics, run_metrics_bar, bq_hist, per_cycle_quality,
+# then the per-sample sections. Lift the run-level plots up to sit right under
+# the run QC table, ahead of the manifest and index tables. FastQC's three
+# most-checked plots go first in the same way.
+report_section_order:
+  demux_unknown_barcodes:
+    order: 1000
+  illumina_run_metrics:
+    order: 990
+  illumina_occupied_vs_pf:
+    order: 980
+  bases2fastq:
+    order: 990
+  # Our per-lane replacement for bases2fastq's Index Assignment Metrics,
+  # straight after the bases2fastq module.
+  bases2fastq_index_assignment:
+    order: 989
+  pacbio_run_metrics:
+    order: 990
+  nanopore_run_metrics:
+    order: 990
+  # Long-read QC groups (ont_summary_stats.py, pacbio_cell_qc.py), under the
+  # Run Metrics table: the flow cell / SMRT Cell first, then the reads.
+  nanopore_flowcell:
+    order: 970
+  nanopore_reads:
+    order: 960
+  pacbio_cell:
+    order: 970
+  pacbio_reads:
+    order: 960
+  fastqc:
+    order: 900
+  demux_summary:
+    order: 850
+  bclconvert:
+    order: 800
+  run_qc_metrics_table:
+    order: 1
+  run_metrics_bar:
+    order: 2
+  bq_hist:
+    order: 3
+  per_cycle_quality:
+    order: 4
+  fastqc_per_base_sequence_quality:
+    order: 1
+  fastqc_per_base_sequence_content:
+    order: 2
+  fastqc_adapter_content:
+    order: 3
+  # Sections within the long-read groups, in reading order.
+  ont_pore_activity_total:
+    order: 1
+  ont_pore_activity:
+    order: 2
+  ont_pore_occupancy:
+    order: 3
+  ont_active_channels:
+    order: 4
+  ont_q_over_time:
+    order: 5
+  ont_temperature:
+    order: 6
+  ont_bias_voltage:
+    order: 7
+  ont_minknow_messages:
+    order: 8
+  ont_pass_fail:
+    order: 1
+  ont_yield_over_time:
+    order: 2
+  ont_read_length:
+    order: 3
+  ont_read_length_yield:
+    order: 4
+  ont_qscore:
+    order: 5
+  ont_q_by_length:
+    order: 6
+  ont_speed:
+    order: 7
+  ont_end_reasons:
+    order: 8
+  ont_barcode_score:
+    order: 9
+  pacbio_cell_details:
+    order: 1
+  pacbio_loading:
+    order: 2
+  pacbio_polymerase_length:
+    order: 3
+  pacbio_methylation:
+    order: 4
+  pacbio_hifi_length:
+    order: 1
+  pacbio_hifi_yield_by_length:
+    order: 2
+  pacbio_read_quality:
+    order: 3
+  pacbio_qv_by_length:
+    order: 4
+  pacbio_npasses:
+    order: 5
+  pacbio_barcode_length:
+    order: 6
+  pacbio_barcode_quality:
+    order: 7

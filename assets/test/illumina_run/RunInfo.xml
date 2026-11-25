@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Marker file only: enough for platform detection in a `-stub` smoke run.
+     Not a valid InterOp dataset — INTEROP_SUMMARY will only work stubbed. -->
+<RunInfo Version="6">
+  <Run Id="240101_TESTRUN_0001_ABCDEFGHI" Number="1">
+    <Flowcell>ABCDEFGHI</Flowcell>
+    <Instrument>VH00001</Instrument>
+    <Date>2024-01-01T00:00:00Z</Date>
+    <Reads>
+      <Read Number="1" NumCycles="151" IsIndexedRead="N"/>
+      <Read Number="2" NumCycles="10" IsIndexedRead="Y"/>
+      <Read Number="3" NumCycles="10" IsIndexedRead="Y"/>
+      <Read Number="4" NumCycles="151" IsIndexedRead="N"/>
+    </Reads>
+  </Run>
+</RunInfo>

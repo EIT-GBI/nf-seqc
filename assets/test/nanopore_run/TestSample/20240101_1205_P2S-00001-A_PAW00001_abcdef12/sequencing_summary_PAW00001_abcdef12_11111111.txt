@@ -1,0 +1,4 @@
+filename_pod5	read_id	passes_filtering	sequence_length_template	mean_qscore_template	barcode_arrangement	alias
+PAW00001_pass_barcode01_abcdef12_0.pod5	r1	TRUE	5000	18.0	barcode01	sample A
+PAW00001_pass_mixed_abcdef12_0.pod5	r2	TRUE	8000	19.0	barcode02	sample_B
+PAW00001_fail_unclassified_abcdef12_0.pod5	r3	FALSE	300	5.0	unclassified	unclassified

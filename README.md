@@ -1,31 +1,259 @@
 # nf-seqc
 
+Batch-level QC for a sequencing run. Point it at the **complete output directory
+of one sequencing run** and it detects which instrument produced it, normalises
+the reads, and reports QC for the whole batch in a single MultiQC report.
 
-Nextflow pipeline for seqc.
+One pipeline run = one sequencing run.
 
 ## Quickstart
 
 ```bash
-nextflow run eit-gbi/nf-seqc -profile test,docker
+# Clone with submodules — the nf-mod-* modules are git submodules
+git clone --recurse-submodules https://github.com/EIT-GBI/nf-seqc.git
+
+# Smoke-test the wiring on the bundled marker-file fixtures (no real data)
+nextflow run . -profile test -stub
+nextflow run . -profile test_aviti -stub
+nextflow run . -profile test_nanopore -stub
+nextflow run . -profile test_pacbio -stub
+nextflow run . -profile test_publish -stub   # --instrument/--run route
+
+# Real run (GBI cluster: see below)
+nextflow run . -profile cluster --instrument illumina_nextseq_VH02427 --run <run folder>
 ```
+
+### Where runs are read from and published to
+
+Instruments write to
+`/mnt/instrument-prep-zone/sequencing/<brand>_<model>_<machine_ID>/<YYYY>/<run>`.
+Name a run by its instrument and folder:
+
+```bash
+nextflow run . -profile cluster --instrument pacbio_revio_84334 --run r84334_20260817_141703
+```
+
+The pipeline finds the year directory itself and publishes the MultiQC report,
+QC files and reads to the same `<instrument>/<YYYY>/<run>` path under
+`--publish_root`, e.g.
+`/mnt/lustre/users/$USER/nf-seqc-results/pacbio_revio_84334/2026/r84334_20260817_141703/`.
+The results bucket for scientists has the same layout and will replace that
+default once it is mounted.
+
+> **For now the default is `/mnt/lustre/users/$USER/nf-seqc-results/`**, with
+> the same `<instrument>/<YYYY>/<run>` layout: the launching account's Lustre
+> space, which the Prefect robot account has too. The results bucket for
+> scientists exists but is not mounted yet, and `/mnt/instrument-data/sequencing`
+> is for now a view of the raw data (the same buckets as the prep zone), so do
+> not publish there. A destination the account cannot write to stops the run
+> at the start.
+The roots are `--prep_root` and `--publish_root`; `--outdir` overrides the
+destination. `--input <run_dir>` still takes any run folder, publishing to
+`--outdir` (default `results/<run folder name>`).
+
+Inside the run folder, what scientists open sits at the top and everything
+else is in `qc/`:
+
+```
+<run>/
+├── <run>_multiqc_report.html     the QC report for the whole run
+├── <run>_QC.html                 AVITI only: Element's own run report
+├── <run>_samplesheet.csv         one row per sample: name, barcode/index, run
+│                                 details (from the sample sheet, run manifest,
+│                                 Revio metadata XML or MinKNOW sample sheet)
+├── <sample>…fastq.gz             Illumina, AVITI
+├── <sample>.bam                  Nanopore (uBAM, keeps modified-base tags)
+├── <sample>.hifi_reads.bam       Revio, with its .pbi index (+ unassigned_<well>)
+└── qc/                           FastQC (zip + HTML), the MultiQC data folder
+                                  (report tables as text), MultiQC inputs, run
+                                  metrics CSV, software versions, publish record;
+                                  AVITI: bases2fastq's IndexAssignment.csv,
+                                  UnassignedSequences.csv, log, run-manifest
+                                  warnings; Nanopore: dorado's per-read barcode
+                                  calls (<flowcell>.barcoding_summary.txt;
+                                  <flowcell>_fail.* with --include_failed)
+```
+
+- The brand in `--instrument` (`illumina`, `element`, `oxford_nanopore`,
+  `pacbio`) must match the platform detected from the run's files, or the run
+  stops before any task.
+- A run is published once. The first launch records its session ID in
+  `qc/nf-seqc_session.txt`. If the destination already has files,
+  the run stops, unless it is `-resume <that session ID>` (the error names it)
+  or `--overwrite` is given. Two launches of the same run at once: only one
+  gets past the start. `--overwrite` writes over files of the same name; it
+  does not remove files from an earlier run.
+- Results are **copied**, since the destination is another filesystem from
+  `work/`. Illumina FASTQ and Revio HiFi BAM (with `.pbi`) are copied into a
+  task first (`COPY_READS`), because only task outputs can be published, so
+  they briefly exist three times: run folder, `work/`, destination. Clean
+  `work/` once a run is published.
+
+### Running on the GBI cluster
+
+`-profile cluster` targets the sandpit SLURM clusters and switches Apptainer on
+by itself; don't add `singularity` to it. Run folders are under
+`/mnt/instrument-prep-zone/sequencing/<instrument>/<YYYY>/`.
+
+On **sandpit-tokyo**, Apptainer exists only on the compute nodes, so the
+Nextflow head job must itself run as a SLURM job. Nextflow (with its Java)
+comes from the shared module. Load the version CI tests by name,
+`module load nextflow/26.04.7`: it is the default today, but the default
+moves when a new module is installed. A batch
+script needs a login shell (`#!/bin/bash -l`) for `module` to exist:
+
+```bash
+#!/bin/bash -l
+#SBATCH -p cpu -c 2 --mem 8G -t 24:00:00 -J nf-seqc -o nf-seqc-%j.out
+set -euo pipefail
+module load nextflow/26.04.7
+cd ~/nf-seqc
+nextflow run . -profile cluster \
+    --instrument element_aviti_AV252906 --run <run> \
+    -w /mnt/lustre/users/$USER/nextflow-work
+```
+
+Keep `-w` on Lustre, not the NFS home: bases2fastq writes the full FASTQ set
+into `work/`. Images are cached in the shared
+`/mnt/lustre/containers/.staging/nf/cache/`.
+
+The head job pulls any image missing from that cache, and converting the
+11 GB dorado image to SIF needs more memory than an 8 GB head job has
+(`mksquashfs` is OOM-killed). Before the first Nanopore run on a new dorado
+image, pull it once in a job of its own, e.g. `-c 2 --mem 24G` (it peaked at
+~20 GB), with
+`APPTAINER_TMPDIR` on Lustre, then move the file into the cache under the name
+Nextflow expects (`ghcr.io-eit-gbi-nf-mod-dorado-<tag>.img`).
+
+A bare `-resume` picks up the **most recent** run launched from that directory,
+whatever run it was. If you have launched another run from the same clone
+since, it silently re-runs everything, and for an AVITI run whose data has
+dropped out of the Alluxio cache that is about 2 h of bases2fastq. Resume a
+specific run by its session ID from `nextflow log`
+(`-resume <session-id>`), or launch each run from its own directory.
+
+### Real-data test runs
+
+`-stub` exercises only the wiring. The `test_real_*` profiles run the tools on
+real, miniaturised runs kept on sandpit-tokyo, so they work only there, next to
+`cluster`:
+
+```bash
+nextflow run . -profile cluster,test_real_illumina   # NextSeq 2000 subset
+nextflow run . -profile cluster,test_real_aviti      # AVITI, bases2fastq on 2 tiles
+nextflow run . -profile cluster,test_real_nanopore   # P24 subset, needs a GPU node
+nextflow run . -profile cluster,test_real_pacbio     # Revio, one SMRT Cell
+```
+
+Submit them with `sbatch` as above. `conf/test_real.config` lists what each
+fixture holds.
+
+## Supported platforms
+
+The platform is detected from the marker files each instrument writes; override
+with `--platform illumina|aviti|nanopore|pacbio`.
+
+| Platform | Detected by | Reads delivered | QC |
+| --- | --- | --- | --- |
+| Illumina NextSeq | `RunInfo.xml` | already demultiplexed on-instrument, left in place | FastQC + InterOp run metrics (see below) + BCL Convert demultiplexing reports |
+| Element AVITI | `RunParameters.json` | `bases2fastq` writes FASTQ in the pipeline | FastQC + RunStats/Metrics |
+| ONT PromethION P24 | `final_summary_*.txt`, `*.pod5` | `dorado` basecalls on **GPU** to uBAM and demultiplexes; uBAM delivered, no FASTQ | per-sample reads, yield, N50 and median Q from MinKNOW's `sequencing_summary_*.txt` (its live basecalls, no BAM is read) + per-flow-cell run metrics from MinKNOW's `report_*.json` (pore scans, occupancy, live yield and N50) + barcode counts from the pipeline's demux + **Nanopore flow cell** plots (pore activity, occupancy, active channels, Q over time, temperature, bias voltage, MinKNOW warnings) and **Nanopore reads** plots per sample (pass/fail, yield over time, read length, yield by length, Q-score, Q by length, translocation speed, end reasons, barcode score) |
+| PacBio Revio | `<well>/pb_formats/*.consensusreadset.xml`, `<well>/hifi_reads/*.hifi_reads*.bam` | HiFi uBAM already final, left in place | read from the instrument's own reports, no BAM is read: per-sample HiFi reads, yield, length, QV and barcode quality (`barcodes.report.json`) + per-SMRT-Cell run metrics (P0/P1/P2, loading flagged below `--pacbio_min_p1` / above `--pacbio_max_p2`, HiFi yield, N50, QV) + lima barcode counts + **PacBio SMRT Cell** plots from `reports.zip` (details table: polymerase, insert, CCS and control figures; loading; polymerase read length; base modifications) and **PacBio HiFi reads** plots from `zmw_metrics.csv.gz` and pbreports' binned barcode data (length, yield by length, quality, quality by length, passes; length and barcode quality per sample) |
+
+MinKNOW does not split POD5 cleanly by barcode: `pod5_pass/mixed/` holds part
+of each barcode's reads. So every POD5 folder is basecalled with the run's
+barcoding kit (`--kit-name`, read from `final_summary_*.txt`), and
+`dorado demux` then splits each flow cell's reads by barcode. Samples are named
+after the sample sheet's `alias`, or the barcode. Unclassified reads are counted
+in the Demultiplexing table and always delivered (`unclassified_<flowcell>.bam`),
+but reported as a sample only with `--include_failed`. A barcode under
+`--min_barcode_reads` is not a sample either: its reads count as unclassified
+and its BAM is delivered as `unclassified_<flowcell>_<barcode>.bam`. An
+unbarcoded flow cell is one sample; restarted, it has one BAM per acquisition
+(`<sample>_<flowcell>_<run>.bam`) and one sample row. Read folders other than
+`pod5_pass/`, `pod5_fail/` and `pod5/` (e.g. `pod5_skip/`, `pod5_recovered/`)
+stop the run before anything is published (EIT-GBI/nf-seqc#24).
+
+### Illumina run metrics
+
+The Illumina run metrics were ported from
+[Automate-Seq-Run-Metrics-Collection](https://github.com/EIT-GBI/Automate-Seq-Run-Metrics-Collection),
+a cron collector that is no longer used (2026-11): same metric set and 24
+columns. It reads InterOp via Illumina's Python bindings plus
+`RunParameters.xml` and `PrimaryAnalysisMetrics.csv` (the
+`INTEROP_RUN_METRICS` process from
+[nf-mod-interop](https://github.com/EIT-GBI/nf-mod-interop)), and emits:
+
+- `qc/<run>.run_metrics.csv` — header + one row for this run, so CSVs from
+  several runs concatenate
+- `qc/<run>_run_metrics_mqc.tsv` — the same table as a MultiQC section
+- `qc/<run>_occupied_vs_pf_mqc.png` — the loading plot, embedded in the report
+
+Differences from that tool, forced by running under Nextflow rather than cron:
+
+- That tool appends to one central CSV across runs; here one pipeline run is one
+  sequencing run, so a single-row CSV is emitted per run. Appending to a shared
+  file from a task would race and break `-resume`.
+- Its `monitoring_complete.txt` marker exists to stop cron reprocessing a run.
+  `-resume` covers that, so **nothing in the run directory is modified**.
+
+The `RTAComplete.txt` + `CopyComplete.txt` completeness gate is kept — metrics
+from a partial run are misleading. Override with `--allow_incomplete`.
+
+## Parameters
+
+| Param | Default | Purpose |
+| --- | --- | --- |
+| `--instrument` | — | instrument directory, `<brand>_<model>_<machine_ID>`; with `--run` |
+| `--run` | — | run folder name, looked up under `<prep_root>/<instrument>/<YYYY>/` |
+| `--prep_root` | `/mnt/instrument-prep-zone/sequencing` | where instruments write runs |
+| `--publish_root` | `/mnt/lustre/users/$USER/nf-seqc-results` (the launching account's Lustre space; the Prefect robot account has one too) | where `--instrument`/`--run` results are published |
+| `--input` | — | run directory, instead of `--instrument`/`--run` |
+| `--outdir` | `<publish_root>/<instrument>/<YYYY>/<run>`, or `results/<run>` with `--input` | output directory |
+| `--overwrite` | `false` | publish into a destination that already has results. Files are written over, never removed: a file the new run does not produce (a sample renamed in a corrected sample sheet, `<sample>_fail.bam` after dropping `--include_failed`, Undetermined FastQC after dropping `--include_undetermined`) stays, so clear the folder first when that matters |
+| `--platform` | auto-detect | force a platform |
+| `--run_id` | run dir name | overrides the run label |
+| `--fastq_dir` | — | Illumina: FASTQ live outside the run folder |
+| `--illumina_analysis` | latest | Illumina: report on `Analysis/<n>`. A re-analysis on the instrument adds `Analysis/2`, `3`, … beside `Analysis/1`, each with its own FASTQ; by default the latest is used (with a warning naming the others). To publish a later re-analysis of a run already delivered, run again with `--overwrite`: files of samples that are no longer in the analysis stay, so clear the old folder first if that matters. A `-resume` also picks the latest analysis again, so resume with the same `--illumina_analysis` |
+| `--pod5_dir` | — | Nanopore: POD5 live outside the run folder. Flow cell ids, the kit and sample-sheet aliases come from `final_summary_*.txt` and `sample_sheet_*.csv` beside each acquisition's POD5 folders, so keep MinKNOW's layout (copy them along); bare POD5 need `--barcode_kit` and are named after their folders, with no per-sample MinKNOW statistics. The run folder is still checked for `final_summary` |
+| `--barcode_kit` | — | Nanopore: barcoding kit (e.g. `SQK-RBK114-24`) when `final_summary` does not name one |
+| `--min_barcode_reads` | `100` | Nanopore: fewest reads for a barcode to be reported as a sample; reads of smaller barcodes count as unclassified, and their BAM is delivered as `unclassified_<flowcell>_<barcode>.bam` |
+| `--bam_dir` | — | PacBio: HiFi BAM live outside the run folder |
+| `--include_undetermined` | `false` | Also QC the Undetermined (Illumina) / Unassigned (AVITI) reads: FastQC and a sample row. They are delivered either way |
+| `--include_failed` | `false` | Nanopore: also basecall `pod5_fail`, demultiplexed apart (`qc/<flowcell>_fail.barcoding_summary.txt`) and delivered as `<sample>_fail.bam`, or `<sample>_<flowcell>_fail_<run>.bam` on a restarted unbarcoded flow cell (never inside a sample's BAM, never a sample row), and report the unclassified reads as a sample (they are delivered either way). PacBio failed reads are always counted per barcode (hidden General Statistics column) |
+| `--allow_incomplete` | `false` | Report even on an unfinished run: Illumina without `RTAComplete.txt`/`CopyComplete.txt`, AVITI without `RunUploaded.json`, Nanopore with an acquisition lacking `final_summary_*.txt`, PacBio with a movie lacking `metadata/<movie>.transferdone` |
+| `--max_undetermined` | `15` | Illumina, AVITI and barcoded PacBio: flag the run as high in the Demultiplexing table, plus a log warning, above this % of Undetermined (Illumina) or Unassigned (AVITI, PacBio Not Barcoded) reads |
+| `--pacbio_min_p1` | `50` | PacBio: flag a SMRT Cell as `low P1` (under-loaded) in Run Metrics, plus a log warning, below this % of productive ZMWs (the lab's threshold; P1 is ideally above 60%) |
+| `--pacbio_max_p2` | `5` | PacBio: flag a SMRT Cell as `high P2` (over-loaded) above this % of P2 ZMWs |
+| `--basecall.model` | baked-in `sup@v5.0.0` | dorado model path inside the container |
+| `--basecall.modified_bases` | `null` | e.g. `5mCG_5hmCG`, `6mA` or `4mC_5mC` (the models in the dorado image) to emit MM/ML tags. Off by default, so delivered BAMs carry **no** modification calls unless asked: an m6A assay such as DiMeLo-seq needs `6mA`. The BAM check columns in General Statistics show what the reads carry, and the log warns when calls were requested but are missing |
+| `--multiqc_config` | — | extra MultiQC config, applied on top of `assets/multiqc_config.yml` (report order, and hides bases2fastq plots FastQC already shows) |
 
 ## Layout
 
-- `main.nf` — entry workflow
-- `nextflow.config` — manifest, params, profiles
-- `conf/` — split configuration (`base.config`, `test.config`)
-- `modules/` — per-tool processes pulled in as git submodules from `nf-mod-*` repos
-- `bin/` — helper scripts added to `$PATH` inside processes
-- `assets/` — small static inputs the pipeline ships with
+- `main.nf` — platform detection, dispatch, and the `output {}` publish targets
+- `subworkflows/local/` — one subworkflow per platform, plus `batch_report.nf`
+- `modules/<tool>/` — git submodules from `nf-mod-*` repos
+- `modules/local/` — tools with no `nf-mod-*` repo yet (bases2fastq, multiqc, ont_summary_stats, pacbio_cell_qc, bam_check, sample_metadata)
+- `conf/` — `base.config` (resources), `test.config`. Container images are set in
+  `nextflow.config`: each released module's `conf/module.config` is included, and
+  local-module images are pinned in its `process {}` block. Nothing uses `:latest`
+  except `-profile dev`
+- `assets/test/` — marker-file fixtures for `-stub` smoke runs
 
 ## Adding a module
 
 ```bash
-git submodule add https://github.com/eit-gbi/nf-mod-<tool>.git modules/<tool>
+git submodule add https://github.com/EIT-GBI/nf-mod-<tool>.git modules/<tool>
+git -C modules/<tool> checkout v<version>
 ```
 
-Then in `main.nf`:
+Record the version in `modules.versions` (the source of truth — the sync
+workflow moves the submodule pointer to match), add
+`includeConfig 'modules/<tool>/conf/module.config'` to the module-containers
+section of `nextflow.config` plus a `:latest` line for it in the `dev` profile,
+then include it in the relevant subworkflow:
 
 ```groovy
-include { TOOL } from './modules/<tool>/main.nf'
+include { TOOL_SUBCOMMAND } from '../../modules/<tool>/<subcommand>/main.nf'
 ```
