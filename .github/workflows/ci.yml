@@ -83,6 +83,24 @@ jobs:
             test "$(cat "results-copy-test/$name")" = "$want" || { echo "::error::$name has the wrong content"; exit 1; }
           done
 
+  # Nanopore BAM names from dorado demux's real file names
+  # (<acquisition>_<kit>_barcodeNN.bam), which -stub cannot reach: a flow cell
+  # that ran several MinKNOW protocols must get one name per BAM.
+  ont-samples:
+    name: Nanopore BAM names
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - uses: nf-core/setup-nextflow@v3
+        with:
+          version: '26.04.7'
+
+      - name: Name demultiplexed BAMs
+        run: nextflow run tests/ont_samples.nf
+
   stub:
     name: Stub run (${{ matrix.profile }})
     runs-on: ubuntu-latest

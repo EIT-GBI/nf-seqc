@@ -174,24 +174,86 @@ def safeId( String name ) {
     return name.replaceAll(/[^A-Za-z0-9._-]+/, '_')
 }
 
+// The acquisition a demultiplexed BAM came from, or null. With --no-classify,
+// dorado demux writes one file per read group, named
+// <acquisition_run_id>_<kit>_barcode01.bam: a flow cell with several MinKNOW
+// protocols (restarted, or a second protocol on the same flow cell) gets one
+// file per barcode per acquisition.
+def demuxAcquisition( bam ) {
+    def m = bam.name =~ /^([0-9a-f]{16,})_/
+    return m.find() ? m.group(1) : null
+}
+
+// acquisition_run_id -> [ run: the first 8 characters of its protocol_run_id
+// (the suffix of MinKNOW's acquisition folder, e.g. 6481f7b6), started: its
+// start time ], from every final_summary_*.txt under the given directories.
+def ontAcquisitionRuns( List roots ) {
+    return roots.findAll { r -> r }
+        .collectMany { r -> files("${r}/**/final_summary_*.txt") + files("${r}/final_summary_*.txt") }
+        .findAll { f -> f.exists() }
+        .collect { f -> keyValues( f ) }
+        .findAll { kv -> kv.acquisition_run_id && kv.protocol_run_id }
+        .collectEntries { kv -> [ ( kv.acquisition_run_id ): [ run: kv.protocol_run_id.take(8), started: kv.started ?: '' ] ] }
+}
+
 // Per-sample [ meta, bam ] from every flow cell's demux output, named by the
 // sample sheet alias, else the barcode. A name used on two flow cells (barcode01
 // on each) is suffixed with the flow cell id. Failed reads (--include_failed)
 // are demultiplexed apart and named <sample>_fail.
-def ontSamples( List demuxed ) {
+//
+// A flow cell with several acquisitions (MinKNOW protocols) has one BAM per
+// barcode per acquisition, delivered as <sample>_<flowcell>_<protocol run>
+// (acq_runs maps the acquisition to its protocol run; the first 8 characters of
+// the acquisition id stand in without a final_summary), as ontPlainSamples()
+// names a restarted unbarcoded flow cell. The sample row stays one per barcode
+// and flow cell (meta.report_id, on the first acquisition's BAM only): the
+// barcoding summary and MinKNOW's statistics cover the whole flow cell.
+def ontSamples( List demuxed, Map acq_runs = [:] ) {
     def rows = demuxed.collectMany { meta, bams ->
         ( bams instanceof List ? bams : [ bams ] ).collect { bam ->
             def barcode = demuxBarcode( bam )
             def name    = meta.aliases[ barcode ] ?: barcode
-            [ meta: meta + [ id: safeId( name ), barcode: barcode ], bam: bam ]
+            def acq     = demuxAcquisition( bam )
+            [ meta: meta + [ id: safeId( name ), barcode: barcode ], bam: bam, acq: acq ]
         }
     }
-    // Pass and failed reads counted apart: a barcode can have failed reads on
-    // two flow cells but a pass BAM on one only.
-    def counts = rows.findAll { r -> r.meta.barcode != 'unclassified' }.countBy { r -> [ r.meta.id, r.meta.status == 'pod5_fail' ] }
+    // Acquisitions per flow cell, over pass and failed reads together, so a
+    // flow cell's BAMs are all named the same way.
+    def acqs = rows.groupBy { r -> r.meta.flowcell }
+        .collectEntries { fc, rs -> [ ( fc ): rs.collect { r -> r.acq }.findAll { a -> a }.unique().sort() ] }
+    // Flow cells per name, pass and failed reads counted apart: a barcode can
+    // have failed reads on two flow cells but a pass BAM on one only.
+    def flowcells = rows.findAll { r -> r.meta.barcode != 'unclassified' }
+        .groupBy { r -> [ r.meta.id, r.meta.status == 'pod5_fail' ] }
+        .collectEntries { k, rs -> [ ( k ): rs.collect { r -> r.meta.flowcell }.unique().size() ] }
+    // The acquisition whose BAM carries a barcode's sample row: the earliest
+    // started (MinKNOW writes started= in UTC, so it sorts as text) that has
+    // the barcode at all.
+    def first_acq = rows.groupBy { r -> [ r.meta.flowcell, r.meta.barcode, r.meta.status ] }
+        .collectEntries { k, rs -> [ ( k ): rs.collect { r -> r.acq ?: '' }.min { a -> [ acq_runs[a]?.started ?: '~', a ].join(' ') } ] }
+    // Each acquisition's name suffix: its protocol run, or the acquisition id's
+    // first 8 characters without a final_summary, or when two acquisitions of
+    // a flow cell belong to one protocol run.
+    def runs = acqs.collectEntries { _fc, as_ ->
+        def by_run = as_.groupBy { a -> acq_runs[a]?.run }
+        as_.collectEntries { a ->
+            def run = acq_runs[a]?.run
+            [ ( a ): run && by_run[run].size() == 1 ? run : a.take(8) ]
+        }
+    }
     return rows.collect { r ->
-        def id = r.meta.barcode == 'unclassified' || counts[ [ r.meta.id, r.meta.status == 'pod5_fail' ] ] > 1 ? "${r.meta.id}_${r.meta.flowcell}" : r.meta.id
-        tuple( r.meta + [ id: ( r.meta.status == 'pod5_fail' ? "${id}_fail" : id ).toString() ], r.bam )
+        def fail   = r.meta.status == 'pod5_fail'
+        def suffix = fail ? '_fail' : ''
+        def base   = r.meta.barcode == 'unclassified' || flowcells[ [ r.meta.id, fail ] ] > 1 ? "${r.meta.id}_${r.meta.flowcell}" : r.meta.id
+        def fc_acq = acqs[ r.meta.flowcell ]
+        if ( fc_acq.size() < 2 ) {
+            return tuple( r.meta + [ id: "${base}${suffix}".toString() ], r.bam )
+        }
+        def acq = r.acq ?: ''
+        def run = runs[ acq ] ?: 'unknown'
+        def id  = safeId( "${r.meta.id}_${r.meta.flowcell}_${run}".toString() )
+        def first = acq == first_acq[ [ r.meta.flowcell, r.meta.barcode, r.meta.status ] ]
+        tuple( r.meta + [ id: "${id}${suffix}".toString(), report_id: "${base}${suffix}".toString(), run8: run, report: first ], r.bam )
     }
 }
 
@@ -233,7 +295,8 @@ def barcodeCounts( List all_samples, List all_summaries ) {
     // are demultiplexed apart and would otherwise add to the same barcodes.
     def samples    = all_samples.findAll { meta, _bam -> meta.status != 'pod5_fail' }
     def summaries  = all_summaries.findAll { meta, _summary -> meta.status != 'pod5_fail' }
-    def ids        = samples.collectEntries { meta, _bam -> [ ( "${meta.flowcell}/${meta.barcode}".toString() ): meta.id ] }
+    // A flow cell's acquisitions share one sample row (ontSamples()).
+    def ids        = samples.collectEntries { meta, _bam -> [ ( "${meta.flowcell}/${meta.barcode}".toString() ): meta.report_id ?: meta.id ] }
     def reads      = [:]
     def unassigned = 0L
     summaries.each { meta, summary ->
@@ -619,6 +682,12 @@ workflow NANOPORE_QC {
         .map { key, metas, bams ->
             def first = metas.sort( false ) { m -> m.id }[0]
             def id    = key[1] ? "${key[0]}_fail" : key[0]
+            // One sample row per barcode merges the flow cell's protocols,
+            // named from the first one's sample sheet: say so when another
+            // protocol's sheet named the barcodes differently.
+            if ( metas.collect { m -> m.aliases }.unique().size() > 1 && !key[1] ) {
+                log.warn "NANOPORE_QC: flow cell ${key[0]} ran several protocols with different sample-sheet aliases; barcodes are named and reported from ${first.sample}'s sheet, and each barcode's reads from every protocol share its sample row."
+            }
             // Sorted: groupTuple lists them in the order the basecaller tasks
             // finished, and the order is part of the task hash, so -resume
             // would otherwise demultiplex every flow cell again.
@@ -627,10 +696,17 @@ workflow NANOPORE_QC {
 
     DORADO_DEMUX( ch_to_demux )
 
+    // Which protocol run each acquisition belongs to, to name a flow cell's
+    // BAMs apart when it ran several protocols. From the run folder and
+    // --pod5_dir, wherever final_summary is.
+    ch_acq_runs = ch_run.map { _meta, run_dir -> [ ontAcquisitionRuns( [ run_dir, pod5_dir ] ) ] }
+
     // toList: names are checked for clashes across flow cells.
     ch_demuxed = DORADO_DEMUX.out.ubam
         .toList()
-        .flatMap { demuxed -> ontSamples( demuxed ) }
+        .map { demuxed -> [ demuxed ] }
+        .combine( ch_acq_runs )
+        .flatMap { demuxed, acq_runs -> ontSamples( demuxed, acq_runs ) }
 
     // An unbarcoded folder's BAM is its sample, named after MinKNOW's sample id.
     ch_plain = ch_called.plain
@@ -650,7 +726,8 @@ workflow NANOPORE_QC {
     //   - a barcode is a sample only with --min_barcode_reads reads (every
     //     barcode is when there are no counts to judge by). A smaller one's
     //     reads count as unclassified, and its BAM is delivered as
-    //     unclassified_<flowcell>_<barcode>.
+    //     unclassified_<flowcell>_<barcode> (_<protocol run> when the flow
+    //     cell ran several protocols).
     //   - the unclassified BAM is a sample only with --include_failed.
     //   - failed reads (<sample>_fail) are never a sample row.
     //   - an unbarcoded flow cell has one sample row (ontPlainSamples()).
@@ -658,9 +735,9 @@ workflow NANOPORE_QC {
         .combine( ch_counts )
         .map { meta, bam, counts ->
             def fail = meta.status == 'pod5_fail'
-            def low  = meta.barcode && meta.barcode != 'unclassified' && !fail && counts.reads && ( counts.reads[ meta.id ] ?: 0L ) < min_reads
+            def low  = meta.barcode && meta.barcode != 'unclassified' && !fail && counts.reads && ( counts.reads[ meta.report_id ?: meta.id ] ?: 0L ) < min_reads
             def report = !fail && !low && ( meta.barcode != 'unclassified' || include_failed ) && meta.report != false
-            def id = low ? safeId( "unclassified_${meta.flowcell}_${meta.barcode}".toString() ) : meta.id
+            def id = low ? safeId( ( [ 'unclassified', meta.flowcell, meta.barcode ] + ( meta.run8 && meta.report_id ? [ meta.run8 ] : [] ) ).join('_') ) : meta.id
             tuple( meta + [ id: id, report: report ], bam )
         }
         .toList()
